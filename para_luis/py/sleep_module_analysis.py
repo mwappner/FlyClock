@@ -58,7 +58,7 @@ def peakfind(t, xfdd, yfdd):
     xfdd_relmaxcln = xfdd_relmax
     yfdd_relmaxcln = yfdd_relmax
         
-    # removes from the list the maxima below zero threshold
+    # removes from the list the maxima below threshold
     peak_threshold = 5 # this is the threshold value in mV for accepting a peak
     
     i = len(xfdd_relmaxcln)-1

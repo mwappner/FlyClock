@@ -10,12 +10,15 @@ Created on Tue Jan  3 15:35:04 2023
 import re
 
 import numpy as np
-from scipy import signal
+from scipy import signal, interpolate
 from scipy.ndimage import gaussian_filter1d
+from skimage import filters
 import pandas as pd
 
 import pyabf
 import pyabf.filter
+
+from utils import sort_by, enzip
 
 #%% Classes
 
@@ -69,13 +72,19 @@ class Processors:
     channels 'ch1_det' and 'ch2_det'.
     """
     
+    _all_info_attributes = '_info', '_trends', '_peaks'
+    
     def __init__(self, pandas_obj):
         # save the dataframe as an object to later access
         self._df = pandas_obj
         
-        self._info = None
-        self._trends = None
+        self._init_info_attributes()
     
+    def _init_info_attributes(self):
+        """Initialize the values of the info attributes as None"""
+        for attr in self._all_info_attributes:
+            setattr(self, attr, None)
+            
     @property
     def info(self):
         return self._info
@@ -99,17 +108,77 @@ class Processors:
         self._trends = trend_pair
     def get_trend_poly(self, inx):
         assert inx in (1,2), 'inx must be either 1 or 2'
+        assert 'pdetrend' in self.steps, 'You must run a detrending job first'
         return self.trends[inx-1]
     def get_trend(self, inx):
         assert inx in (1,2), 'inx must be either 1 or 2'
+        assert 'pdetrend' in self.steps, 'You must run a detrending job first'
         return self.trends[inx-1](self._df.times)
     
-    @property
-    def phase_difference(self):
-        if 'K' not in self._df.columns:
-            raise ValueError('Phase difference has not been calculated yet')
-        return np.nanmean(self._df.K)
+    def get_phase_difference(self, channels=None):
+        """ Get the mean phase difference for the given channel, if it has been
+        calculated. If channels=None, get the last one."""
+        # Check if a phase difference was calculated at all. If so, set channels
+        # to the appropiate value (last difference calculated).
+        if channels is None:
+            if 'phase_diff' not in self.steps:
+                raise ValueError('Phase difference has not been calculated yet')
+                
+            channels = self.get_step_info('phase_diff')['channels']
+        
+        # Check if phase diff was calculated for the required channel. This is 
+        # trivial if channels=None
+        if not self._check_if_action_was_performed_on_channel('phase_diff', channels):
+            raise ValueError(f'Phase difference has not been calculated for channel {channels} yet')
+        
+        K_name = (channels + '_K').strip('_') 
+        return np.nanmean(self._df[ K_name ])
     
+    @property
+    def peaks(self):
+        return self._peaks
+    @peaks.setter
+    def peaks(self, peak_pair):
+        if self.peaks is not None:
+            print("You've already calculated peaks before. Overriding the previous one.")
+        self._peaks = peak_pair
+   
+    def get_peak_pos(self, inx):
+        assert inx in (1,2), 'inx must be either 1 or 2'
+        assert 'findpeaks' in self.steps, 'You must find peaks first'
+        return self._df.times.values[self.peaks[inx-1]]
+   
+    def get_peak_values(self, inx, channels=None):
+        assert inx in (1,2), 'inx must be either 1 or 2'
+        assert 'findpeaks' in self.steps, 'You must find peaks first'
+        
+        if channels is not None and not self._check_if_action_was_performed_on_channel('findepakes', channels):
+            print('WARNING: findpeaks was not performed on this channel')
+        
+        if channels is None:
+            channels = self.get_step_info('findpeaks')['channels']
+        ch_pair = self._get_channels(channels)
+        return ch_pair[inx-1].values[self.peaks[inx-1]]
+    
+    def get_avg_period(self, inx=None):
+        assert inx in (1,2, None), 'inx must be either 1 or 2, or None'
+        assert 'findpeaks' in self.steps, 'You must find peaks first'
+        
+        if inx is None:
+            ch1_period = np.mean( np.diff(self.get_peak_pos(1)))
+            ch2_period = np.mean( np.diff(self.get_peak_pos(2)))
+            return np.mean((ch1_period, ch2_period))
+        else:
+            return np.mean( np.diff(self.get_peak_pos(inx)))
+    def get_periods(self, inx):
+        assert inx in (1,2, None), 'inx must be either 1 or 2, or None'
+        assert 'findpeaks' in self.steps, 'You must find peaks first'
+        
+        peak_pos = self.get_peak_pos(inx)
+        periods = np.diff(peak_pos)
+        period_times = peak_pos[:-1] + np.diff(peak_pos ) / 2
+        
+        return period_times, periods
     
     def downsample(self, downsampling_rate=10):
         """
@@ -129,11 +198,10 @@ class Processors:
         
         # make sure to keep metadata and processing steps info
         add_run_info(downsampled, self._df.metadata.file)
-        for step in self.info:
-            downsampled.process.info = step
-        if self.trends is not None:
-            downsampled.process.trends = self.trends
+        for attr in self._all_info_attributes:
+            setattr(downsampled.process, attr, getattr(self, attr))
         
+        # record what we did and update the sampling rate
         downsampled.process._add_process_entry('downsampling', downsampling_rate=downsampling_rate)
         downsampled.metadata.sampling_rate = self._df.metadata.sampling_rate / downsampling_rate
         downsampled.reset_index(drop=True, inplace=True)
@@ -162,7 +230,7 @@ class Processors:
 
         """
         
-        action_name = 'detrend'
+        action_name = 'pdetrend'
         data = self._df
         
         t = data.times
@@ -184,6 +252,157 @@ class Processors:
         self._save_processed_data(y1dtr, y2dtr, keep_og, channels, action_name)
         self._add_process_entry(action_name, degree=degree, keep_og=keep_og, channels=channels)
         self.trends = ch1_trend_poly, ch2_trend_poly
+        
+    def magnitude_detrend(self, keep_og=False, channels=''):
+        """
+        Use the magnitude calculated through a Hilbert transform to "detrend" a
+        signal by dividing it by its magnitude (envelope).
+
+        Parameters
+        ----------
+        keep_og : Bool, optional
+            Whether to keep the original column or overwride it. The default is
+            False.
+        channels : str, optional
+            The channel to apply the detrend to. You need to have calculated 
+            the phase and magnitude for the target channel already. If not, 
+            this function will do it. Note the limitations of this calculation
+            in calc-magnitude_and_phases. The default is ''.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        action_name = 'mdetrend'
+        
+        if not self._check_if_action_was_performed_on_channel('hilbert', channels):
+            self.calc_magnitudes_and_phases(channels)
+        
+        ch1, ch2 = self._get_channels(channels)
+        ch1_mag, ch2_mag = self._get_channels(channels + '_magnitude')
+        
+        ch1_dtr = ch1 / ch1_mag
+        ch2_dtr = ch2 / ch2_mag
+        
+        self._save_processed_data(ch1_dtr, ch2_dtr, keep_og, channels, action_name)
+        self._add_process_entry(action_name, keep_og=keep_og, channels=channels)
+        
+    def average_detrend(self, outlier_mode_proportion=1.8, keep_og=False, channels=''):
+        """
+        Calculates a moving average of the signal and uses that to detrend it.
+        The moving average is calculated over a window of varying size, in
+        particular of size given by the length of a period in the neighborhood
+        of the point being evaluated. The length of the period is extracted from
+        a linear interpolation of period values from a find_peaks operation. If
+        no find_peaks operation was done to to the requeted channel, one is 
+        performed.
+
+        Parameters
+        ----------
+        outlier_mode_proportion : float, optional
+            After calculating the periods, the mode of the periods is computed.
+            Only the periods that fall within outlier_mode_proportion times the
+            value of the mode will be used, the rest will be just discarded. 
+            The default is 1.8.
+        keep_og : Bool, optional
+            Whether to keep the original column or overwride it. The default is
+            False.
+        channels : str, optional
+            The channel to apply the detrend to. You need to have ran a find 
+            peals operation on the target channel already. If not, this 
+            function will do it. Note the limitations of this calculation in 
+            calc-magnitude_and_phases. The default is ''.
+
+        Returns
+        -------
+        None.
+
+        """        
+        
+        action_name = 'adetrend'
+        data = self._df
+        
+        if not self._check_if_action_was_performed_on_channel('findpeaks', channels):
+            self.find_peaks(channels=channels)        
+            
+        ch_data = self._get_channels(channels)
+
+        trendlines = []
+        for ch in [1,2]:        
+            period_times, periods = self.get_periods(ch)
+    
+            # calculate the mode
+            counts, bins = np.histogram(periods)
+            bin_centers = bins[:-1] + np.diff(bins) / 2
+            period_mode = bin_centers[np.argmax(counts)]
+    
+            # find periods that fall close to the mode to exclude points where we skipped a pulse
+            valid_period_inxs = periods < outlier_mode_proportion * period_mode
+            continuos_periods = np.interp(data.times, period_times[valid_period_inxs], periods[valid_period_inxs])
+            continuos_periods *= data.metadata.sampling_rate
+    
+            # calculate the trendline
+            nanlocs = np.isnan(ch_data[ch-1])
+            trendline = self.varying_size_rolling_average(ch_data[ch-1].values[~nanlocs], continuos_periods[~nanlocs], samesize=True)
+            trendlines.append(trendline)
+                
+        # save trends
+        self._save_processed_data(*trendlines, keep_og=True, channels=channels, action='average')
+        
+        #detrend data
+        trendlines = self._get_channels(channels + '_average')
+        detrended = [ch - tr for ch, tr in zip(ch_data, trendlines)]
+        
+        #save detrended data
+        self._save_processed_data(*detrended, keep_og, channels, action_name)
+        self._add_process_entry(action_name, outlier_mode_proportion=outlier_mode_proportion, keep_og=keep_og, channels=channels)
+        
+    @staticmethod
+    def varying_size_rolling_average(x, sizes, samesize=False, truncate_ends=True):
+        """Calculate the rolling average (or 'moving mean') of the given data with
+        a window that has a different size in each position. Sizes and x need to be
+        the same size, and both need to be 1d arrays. If samesize is True, the output
+        array will be prepended and apended with values to match the input size. If
+        truncate_ends=True, the first few and las entries that don't fit in a window
+        will be truncated."""
+        
+        assert len(x.shape)==1 and len(sizes.shape)==1, 'x and sizes but be 1D'
+        assert x.size == sizes.size, "Sizes of x and sizes must be the same"
+        
+        # Calculate the halfsizes of the windows, having a bias towards the lower half
+        bots = np.floor(sizes/2).astype(int)
+        tops = np.ceil(sizes/2).astype(int)
+        c = np.cumsum(x)
+        
+        ret = []
+        first = bots[0] if truncate_ends else 0
+        for i, (w, bot, top) in enzip(sizes[first:], bots[first:], tops[first:]):
+            
+            j = i + first
+            # if I'm reaching too far to the left, truncate
+            if j < bot:
+                bot = j
+                w = bot + top
+            # if I'm reaching too far to the right, stop
+            if j + top >= x.size:
+                if truncate_ends:
+                    break
+                else:
+                    top = x.size - 1 - j
+                    w = bot + top
+            
+            ret.append( (c[j+top] - c[j-bot])/w )
+        
+        if samesize and x.size != len(ret):
+            ret_array = np.ones_like(x) * ret[-1]
+            ret_array[:first] = ret[0]
+            ret_array[first:first+len(ret)] = ret
+        else:
+            ret_array = np.asarray(ret)
+            
+        return ret_array
         
         
     def abf_gauss_filt(self, abf, sigma=20, keep_og=False, channels=''):
@@ -304,12 +523,12 @@ class Processors:
         
         self._save_processed_data(ch1_filt, ch2_filt, keep_og, channels, action_name)
         self._add_process_entry(action_name, filter_order=filter_order, frequency_cutoff=filter_order, keep_og=keep_og, channels=channels)  
+        
 
-
-    def calc_phase(self, channels=''):
+    def calc_magnitudes_and_phases(self, channels=''):
         """
-        Calculates the phase of the timeseries in channels using the hilbert
-        transform.
+        Calculates the phase and magnitude of the timeseries in channels using 
+        the hilbert transform.
 
         Parameters
         ----------
@@ -324,19 +543,17 @@ class Processors:
         """
         
         action_name = 'hilbert'
-        data = self._df
         ch1, ch2 = self._get_channels(channels)
         
-        ch1_mag, ch1_ph = self.calc_magnitudes_and_phases(ch1)
-        ch2_mag, ch2_ph = self.calc_magnitudes_and_phases(ch2)
+        ch1_mag, ch1_ph = self.calc_magnitudes_and_phases_in_one_channel(ch1)
+        ch2_mag, ch2_ph = self.calc_magnitudes_and_phases_in_one_channel(ch2)
         
-        data['ch1_phase'] = ch1_ph
-        data['ch2_phase'] = ch2_ph
-        
+        self._save_processed_data(ch1_ph, ch2_ph, keep_og=True, channels=channels, action='phase')
+        self._save_processed_data(ch1_mag, ch2_mag, keep_og=True, channels=channels, action='magnitude')
         self._add_process_entry(action_name, channels=channels)  
         
     @staticmethod
-    def calc_magnitudes_and_phases(x):
+    def calc_magnitudes_and_phases_in_one_channel(x):
         """Calculate the phae and magnitude of a timeseries using the Hilbert
         transform. Assumes the data is already detrended, with mean 0."""
         
@@ -354,23 +571,154 @@ class Processors:
         
         return magnitudes, phases
     
-    def calc_phase_difference(self):
+    
+    def calc_phase_difference(self, channels=''):
+        """
+        Calculate the phase difference order parameter K as the cosine of the
+        difference of the phase of channel 1 vs channel 2. If the phases had not
+        been calculated so far, calculate them.
+
+        Returns
+        -------
+        None.
+
+        """
         
         data = self._df
         
-        if 'ch1_phase' not in data.columns:
-            self.calc_phase()
+        if not self._check_if_action_was_performed_on_channel('hilbert', channels):
+            self.calc_magnitudes_and_phases(channels)
         
-        K = np.cos(data.ch1_phase - data.ch2_phase)
-        data['K'] = K
+        ch1, ch2 = self._get_channels(channels + '_phase')
+        K = np.cos(ch1 - ch2)
+        data[ (channels + '_K').strip('_') ] = K
         
-        self._add_process_entry('phase_diff')
+        self._add_process_entry('phase_diff', channels=channels)
+  
+    
+    def find_peaks(self, prominence=5, period_percent=0.6, channels=''):
+        """
+        Finds the peaks in the sata saved in channels. See find_peaks_in_one_channel
+        for more info.
 
+        Parameters
+        ----------
+        channels : str, optional
+            A string describing what channel to apply the funciton on. The 
+            default is ''.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        action_name = 'findpeaks'
+        ch1, ch2 = self._get_channels(channels)
+        
+        ch1_peak_indexes = self.find_peaks_in_one_channel(self._df.times, ch1)
+        ch2_peak_indexes = self.find_peaks_in_one_channel(self._df.times, ch2)
+        
+        self.peaks = (ch1_peak_indexes, ch2_peak_indexes)
+        self._add_process_entry(action_name, prominence=prominence, period_percent=period_percent, channels=channels)
+        
+    
+    @staticmethod
+    def find_peaks_in_one_channel(times, ch, prominence=5, period_percent=0.6):
+        """
+        Find the peaks in the signal given by (times, ch). The signal is assumed
+        to be fairly clean (a gaussian fitler with sigma=100ms seems to be good
+        enough). To do so it does three findpeaks passes:
+            1. Find (all) peaks that are above 0mv (assumes a detrended signal)
+            2. Find peaks that fall above a given threshold. The threshold is 
+            calculated from the data of the previous pass using an otsu 
+            thresholding method to discriminate high peaks and spurious peaks.
+            The otsu threshold will only be used if it falls between two maxima
+            of the distribution of peaks, since it tends to give useless values
+            when the distribution has only one maximum.
+            3. Find peaks that lie at least some distance away from the previous
+            peak. The distance is calculated as period_percent% of the mode of 
+            the period duration, as given by the previous pass.
+
+        Parameters
+        ----------
+        times : array
+            time vector.
+        ch : aray
+            data vector.
+
+        Returns
+        -------
+        p_inx : array
+            Indexes where the peaks happen.
+
+        """
+        
+        ## first pass, with threshold 0mv
+        p_inx, _ = signal.find_peaks(ch, height=0)
+        # peaks = ch.values[p_inx]
+        
+        ## second pass, with threshold given by otsu
+        # threshold = Processors.get_threshold(peaks)
+        # p_inx, _ = signal.find_peaks(ch, height=threshold)
+        # peaks = ch.values[p_inx]
+        t_peaks = times.values[p_inx]
+
+        ## third pass, with minimum distance between peaks
+        counts, bins = np.histogram(np.diff(t_peaks))
+        bin_centers = bins[:-1] + np.diff(bins) / 2
+        period_mode = bin_centers[ np.argmax(counts) ]
+        distance_points = int(period_mode * period_percent / (times[1] - times[0]))
+        # p_inx, _ = signal.find_peaks(ch, height=threshold, distance=distance_points)
+        p_inx, _ = signal.find_peaks(ch, distance=distance_points, prominence=prominence)
+                
+        return p_inx
+    
+    @staticmethod
+    def get_threshold(peaks, fallback_threshold=4):
+        """Use the otsu method to calculate the threshold for peaks. If the 
+        value is too big (more than twice the fallback threshold), don't accept
+        it. If the distribution of peaks has only one maximum, don't accept it.
+        If the distribution has two or mode maxima (including the first point) 
+        and the threshold doesn't fall between those maxima, don't accept it.
+        """
+        threshold = filters.threshold_otsu(peaks)
+        
+        if threshold > 2 * fallback_threshold:
+            return 2 * fallback_threshold
+        
+        # we will only accept otsu's threshold if we cna detect two peaks in the 
+        # distribution and the threshold falls between them
+        counts, bins = np.histogram(peaks, bins='auto')
+        bin_centers = bins[:-1] + np.diff(bins) / 2
+        maxima, _ = signal.find_peaks(counts)
+        # make sure the other peak is not the first point of the distribution
+        if all(counts[0]>c for c in counts[1:3]):
+            maxima = np.array( (0, *maxima) )
+
+        # if only one maximum was detected, we fallback
+        if len(maxima) < 2:
+            return fallback_threshold
+        
+        # if too many maxima were found, keep the largest two
+        if len(maxima) > 2:    
+            maxima = sort_by(maxima, counts[maxima])[-2:]
+            maxima.sort()    
+
+        # if at least two maxima were found, accept threshold only if it lies between them
+        if not( bin_centers[maxima[0]] < threshold < bin_centers[maxima[1]]):
+            return fallback_threshold
+        
+        return threshold
+    
     def _save_processed_data(self, ch1, ch2, keep_og, channels, action):
         """
         Write the (processed) data form ch1 and ch2 into the corresponding 
         channels, takeing care to replace or keep the original data as 
-        needed.
+        needed. If the input data is smaller than the original data, it will
+        assume the missing data is due to nans during the calculation and append
+        the new data where the original had no nans. This will error out if the
+        reason for the size mismatch was differente.
 
         Parameters
         ----------
@@ -393,15 +741,19 @@ class Processors:
         
         # handle the case where the input had nans
         if ch1.size != self._df.ch1.size:
-            ch1_test, _ = self._get_channels(channels)
-            nan_locs = np.isnan(ch1_test)
+            ch1_test, ch2_test = self._get_channels(channels)
+            nan_locs1 = np.isnan(ch1_test)
+            nan_locs2 = np.isnan(ch2_test)
+            
+            if np.sum(~nan_locs1) != ch1.size or np.sum(~nan_locs2) != ch2.size:
+                raise ValueError("The size of the input data couldn't be matched to the non nan values in the original data")
             
             ch1_nans = np.full(ch1_test.shape, np.nan)
-            ch1_nans[~nan_locs] = ch1
+            ch1_nans[~nan_locs1] = ch1
             ch1 = ch1_nans
             
             ch2_nans = np.full(ch1_test.shape, np.nan)
-            ch2_nans[~nan_locs] = ch2
+            ch2_nans[~nan_locs2] = ch2
             ch2 = ch2_nans
         
         # define behaviour regarding column overwritting
@@ -413,7 +765,8 @@ class Processors:
         # write columns
         self._df[ch1_write] = ch1
         self._df[ch2_write] = ch2
-        
+      
+    
     def _add_process_entry(self, action, **kwargs):
         """
         Add an entry to the processing list detailing what was done and what
@@ -456,6 +809,7 @@ class Processors:
             raise TypeError('channels must be a string')
         
         channel_options = set(re.sub(r'ch\d_?', '', x) for x in self._df.columns if x != 'times')
+        channels = channels.strip('_') # strip leasing '_' in case there were any
         if channels not in channel_options:
             print(f'{channels} is not an available channel. Choose one of {channel_options}. Returning default raw channels.')
             channels = ''
@@ -482,6 +836,52 @@ class Processors:
         ch1_name, ch2_name = self._get_channel_names(channels)
         return self._df[ch1_name], self._df[ch2_name]
 
+    def get_step_info(self, step, last=True):
+        """
+        Returns the dictionary that stores the arguments corresponding to the 
+        queried processing step. If multiple steps with the same name were
+        registered, it returns the last one if last=True, or all of them 
+        otherwise. 
+
+        Parameters
+        ----------
+        step : str
+            step name.
+        last : Bool, optional
+            Whether to return only the last step with the corresponding name,
+            or all the matching ones. If last=True, return type is a dict, if
+            last=False, return type is a tuple of dicts. The default is True.
+
+        Returns
+        -------
+        step_info: dict, tuple of dicts
+
+        """
+        if step not in self.steps:
+            raise ValueError(f'The step "{step}" has not been performed yet.')
+            
+        matches = (len(self.steps) - 1 - i for i, x in enumerate(reversed(self.steps)) if x==step)
+        if last:
+            return self.info[next(matches)]
+        else:
+            return tuple( reversed( [self.info[inx] for inx in matches] ) )
+
+    def _check_if_action_was_performed_on_channel(self, action: str, channels: str) -> bool:
+        """
+        Checks if an action was performed on a given channel and returns a 
+        boolean result. The caller has to decide what to do with this 
+        information.
+        """
+    
+        if action not in self.steps:
+            return False
+        
+        #check if the action found was done on the correct channel
+        steps = self.get_step_info(action, last=False)
+        if all(channels!=step['channels'] for step in steps):
+            return False
+        else:
+            return True
 
 def load_data(file, gauss_filter=True, override_raw=True):
     """
