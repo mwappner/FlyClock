@@ -1011,6 +1011,9 @@ for i, file in enumerate(data_files):
 
 #%% Plot phase differences vs upstroke lags
 
+from matplotlib import lines
+from utils import enzip
+
 # data_dir = Path('/data/marcos/FloClock_data/output')
 data_dir = Path('/home/user/Documents/Doctorado/Fly clock/FlyClock_data/output/')
 upstroke_file = data_dir / 'upstroke_delay_stats.dat'
@@ -1019,5 +1022,46 @@ phase_diff_file = data_dir / 'phase_differences.csv'
 upstroke_stats = pd.read_csv(upstroke_file, sep=r'\s+').sort_values('#rec').reset_index(drop=True)
 phase_diff = pd.read_csv(phase_diff_file, sep=r'\s+').sort_values('name').reset_index(drop=True)
 
-plt.plot(upstroke_stats['mean'], phase_diff.phase_diff, 'o')
+plt.figure(figsize=(10, 6))
 
+ax1 = plt.subplot(1,2,1)
+plt.errorbar(upstroke_stats['mean'], phase_diff.K, xerr=upstroke_stats['std'], yerr=phase_diff.Kstd, fmt='.', color='0.7')
+plt.xlabel('Upstroke lag')
+plt.ylabel('Sine phase difference')
+plt.title('Upstroke lag - Sine phase difference correlation')
+
+both_categories = []
+titles = 'Upstroke lag', 'Sine phase difference'
+for i, (df, name, order_param, title) in enzip(
+        [upstroke_stats, phase_diff], ('#rec', 'name'), ('mean', 'K'), titles):
+    df['type'] = [n[:2] for n in df[name]]
+    categories = {}
+    for cat in set(df['type']):
+        categories[cat] = df[order_param].values[df['type']==cat]
+        
+    categories['LL+SS'] = [*categories['LL'], *categories['SS']]
+    categories['LR+SR'] = [*categories['LR'], *categories['SR']]
+
+    plt.subplot(2,2,2*(i+1))
+    plt.boxplot(categories.values())
+    plt.gca().set_xticklabels(categories.keys())
+    plt.title(title)
+    
+    both_categories.append(categories)
+    
+styles = {'LL' : ('o', 'C00'), 
+          'SS' : ('^', 'C00'),
+          'LS' : ('s', 'C01'), 
+          'LR' : ('o', 'C03'), 
+          'SR' : ('^', 'C03'),
+          }
+
+for key in categories.keys():
+    if key not in styles:
+        continue
+    cat1, cat2 = both_categories
+    ax1.plot(cat1[key], cat2[key], styles[key][0], color=styles[key][1], zorder=3, label=key)
+
+ax1.legend()
+plt.tight_layout()
+# plt.legend(handles=line_handles)
