@@ -180,8 +180,9 @@ for i, file in enumerate(data_files):
 #%% Single Lissajous figures
 
 # Load data
-data_dir = '/data/marcos/FloClock_data/data'
-file_inx = -2
+# data_dir = '/data/marcos/FloClock_data/data'
+data_dir = '/home/user/Documents/Doctorado/Fly clock/FlyClock_data/data/'
+file_inx = 0
 
 data_files = contenidos(data_dir, filter_ext='.abf')
 pair_guide_file = contenidos(data_dir, filter_ext='.xlsx').pop()
@@ -191,9 +192,18 @@ data = au.load_data(data_files[file_inx], gauss_filter=True, override_raw=False)
 data = data.process.downsample()
 data.process.poly_detrend(degree=5, keep_og=True, channels='gfilt')
 
+# Find direction of the blob
+P = np.polynomial.Polynomial
+nanlocs = np.isnan(data.ch1_gfilt_pdetrend) | np.isnan(data.ch2_gfilt_pdetrend)
+fit_poly = P.fit(data.ch1_gfilt_pdetrend[~nanlocs], data.ch2_gfilt_pdetrend[~nanlocs], deg=1)
+slope = fit_poly.convert().coef[1]
+
+# PLot data
 plt.plot(data.ch1, data.ch2)
 plt.plot(data.ch1_gfilt, data.ch2_gfilt)
-plt.plot(data.ch1_gfilt_detrend, data.ch2_gfilt_detrend)
+plt.plot(data.ch1_gfilt_pdetrend, data.ch2_gfilt_pdetrend)
+
+plt.plot(data.ch1_gfilt_pdetrend, fit_poly(data.ch1_gfilt_pdetrend))
 
 #%% All Lissajous figures
 # Load data
@@ -678,7 +688,8 @@ for i, file in enumerate(data_files):
 #%% Rolling average detrending
 
 # Load data
-data_dir = '/data/marcos/FloClock_data/data'
+# data_dir = '/data/marcos/FloClock_data/data'
+data_dir = '/home/user/Documents/Doctorado/Fly clock/FlyClock_data/data/'
 file_inx = 21
 ch = 1
 outlier_mode_proportion = 1.8
@@ -766,3 +777,247 @@ for i, file in enumerate(data_files):
 
     plt.savefig(savedir / f'{data.metadata.file.stem}.png')
     plt.close()
+
+
+#%% All Lissajous figures with detrended data
+# Load data
+# data_dir = '/data/marcos/FloClock_data/data'
+data_dir = '/home/user/Documents/Doctorado/Fly clock/FlyClock_data/data/'
+# save_dir = '/data/marcos/FloClock pics/Lissajous'
+save_dir = '/home/user/Documents/Doctorado/Fly clock/FlyClock pics/Lissajous detrended'
+
+data_files = contenidos(data_dir, filter_ext='.abf')
+upstrokes_stat_file = Path(data_dir) / '../output' / 'upstroke_delay_stats.dat'
+upstrokes_stat_file.resolve()
+upstroke_stats = pd.read_csv(upstrokes_stat_file, sep=r'\s+')
+
+for i, file in enumerate(data_files):
+    print(f'Running {file.stem}: {i+1}/{len(data_files)}')
+        
+    # Process data a bit
+    data = au.load_data(file, gauss_filter=True, override_raw=False)
+    data = data.process.downsample()
+    data.process.poly_detrend(degree=5, channels='gfilt')
+    data.process.gaussian_filter(sigma_ms=100, channels='gfilt')
+    data.process.find_peaks(period_percent=0.6, prominence=5, channels='gfilt')
+    data.process.average_detrend(outlier_mode_proportion=1.8, channels='gfilt')
+    
+    # Find direction of the blob
+    P = np.polynomial.Polynomial
+    nanlocs = np.isnan(data.ch1_gfilt) | np.isnan(data.ch2_gfilt)
+    fit_poly = P.fit(data.ch1_gfilt[~nanlocs], data.ch2_gfilt[~nanlocs], deg=1)
+    slope = fit_poly.convert().coef[1]
+
+    # Plot data
+    fig, ax = plt.subplots(constrained_layout=True)
+    ax.set_aspect('equal')
+    
+    # Plot Lissajous
+    ax.plot(data.ch1 - data.process.get_trend(1) - data.ch1_gfilt_average, 
+            data.ch2 - data.process.get_trend(2) - data.ch2_gfilt_average,
+            color='0.8')
+    ax.plot(data.ch1_gfilt, data.ch2_gfilt)
+    
+    xlims = ax.get_xlim()
+    ylims = ax.get_ylim()
+    
+    # Plot blob trend line
+    ax.plot(data.ch1_gfilt, fit_poly(data.ch1_gfilt), ':', c='xkcd:salmon')
+    
+    ax.plot(xlims, xlims, '--', c='0.3')
+    ax.set_xlim(xlims)
+    ax.set_ylim(ylims)
+    
+    ax.set_xlabel(f'Channel 1 ({data.metadata.ch1})')
+    ax.set_ylabel(f'Channel 2 ({data.metadata.ch2})')
+    
+    uss_row = upstroke_stats[upstroke_stats['#rec'] == data.metadata.file.stem]
+    uss_row = next(uss_row.itertuples())
+    ax.set_title(f'{data.metadata.file.stem} | slope = {slope:.2f} | upstroke lag = {uss_row.mean:.2f}±{uss_row.std:.2f}')
+    
+    plt.savefig(save_dir + f'/{data.metadata.file.stem}.png')
+    plt.close(fig)
+
+
+#%% Hilbert on rolling average detrended data
+
+from mpl_toolkits.axes_grid1.inset_locator import inset_axes
+
+# Load data
+# data_dir = '/data/marcos/FloClock_data/data'
+data_dir = '/home/user/Documents/Doctorado/Fly clock/FlyClock_data/data/'
+file_inx = 13
+
+data_files = contenidos(data_dir, filter_ext='.abf')
+
+upstrokes_stat_file = Path(data_dir) / '../output' / 'upstroke_delay_stats.dat'
+upstrokes_stat_file.resolve()
+upstroke_stats = pd.read_csv(upstrokes_stat_file, sep=r'\s+')
+
+# Process data a bit
+data = au.load_data(data_files[file_inx], gauss_filter=True, override_raw=True)
+data = data.process.downsample()
+data.process.poly_detrend(degree=5)
+data.process.gaussian_filter(sigma_ms=100)
+data.process.find_peaks(period_percent=0.6, prominence=5)
+data.process.average_detrend(outlier_mode_proportion=1.8, keep_og=False)
+data.process.calc_phase_difference()
+
+fig = plt.figure(figsize=(16, 8))
+gs = fig.add_gridspec(4,2)
+
+# Plot data
+ax1 = plt.subplot(gs[:2, :])
+plt.plot(data.times, data.ch1, label=f'Ch1 ({data.metadata.ch1})')
+plt.plot(data.times, data.ch2, label=f'Ch1 ({data.metadata.ch1})')
+plt.xlabel('time (s)')
+plt.title('Data')
+
+# Plot inset of data
+plt.subplot(gs[2, 0])
+plt.plot(data.times, data.ch1)
+plt.plot(data.times, data.ch2)
+plt.title('Zoom in')
+plt.xlabel('time (s)')
+plt.xlim(10, 30)
+
+# Plot phase
+plt.subplot(gs[2, 1], sharex=ax1)
+plt.plot(data.times, data.ch1_phase)
+plt.plot(data.times, data.ch2_phase)
+plt.title('Phase')
+plt.xlabel('time (s)')
+
+# Plot sine of phase difference
+plt.subplot(gs[3, 0], sharex=ax1)
+plt.plot(data.times, data.K)
+plt.axhline(0, color='0.6')
+plt.ylim(-1.05, 1.05)
+plt.xlabel('time (s)')
+
+uss_row = upstroke_stats[upstroke_stats['#rec'] == data.metadata.file.stem]
+uss_row = next(uss_row.itertuples())
+plt.title(f'Sine phase difference | K = {np.mean(data.K):.2f} ± {np.std(data.K):.2f} | upstroke lag = {uss_row.mean:.2f}±{uss_row.std:.2f}')
+
+# Plot phase difference
+plt.subplot(gs[3, 1], sharex=ax1)
+plt.plot(data.times, data.ch1_phase - data.ch2_phase)
+plt.axhline(0, color='0.6')
+has_full_turn = np.nanmax(np.abs(
+        np.diff( (data.ch1_phase - data.ch2_phase)[::int(data.metadata.sampling_rate)] )
+                )) > 3
+plt.title('Phase difference | Has full turn: ' + ('No', 'Yes')[int(has_full_turn)])
+plt.xlabel('time (s)')
+plt.xlim(data.times.min(), data.times.max())
+
+# Format
+plt.suptitle(data.metadata.file.stem)
+plt.tight_layout()
+print('Running', data.metadata.file.stem)
+
+
+#%% Plot and save all phase differences on rolling average detrended data
+
+# Load data
+# data_dir = '/data/marcos/FloClock_data/data'
+data_dir = '/home/user/Documents/Doctorado/Fly clock/FlyClock_data/data/'
+save_dir = '/home/user/Documents/Doctorado/Fly clock/FlyClock pics/Hilbert phase'
+file_inx = 5
+
+data_files = contenidos(data_dir, filter_ext='.abf')
+
+upstrokes_stat_file = Path(data_dir) / '../output' / 'upstroke_delay_stats.dat'
+upstrokes_stat_file.resolve()
+upstroke_stats = pd.read_csv(upstrokes_stat_file, sep=r'\s+')
+
+write_file = Path(data_dir) / '../output' / 'phase_differences.csv'
+write_file.resolve()
+
+with open(write_file, 'a') as writefile:
+    writefile.write('name,K,Kstd,hasturn\n')
+    
+for i, file in enumerate(data_files):
+    print(f'Running {file.stem}: {i+1}/{len(data_files)}')
+    
+    # Process data a bit
+    data = au.load_data(file, gauss_filter=True, override_raw=True)
+    data = data.process.downsample()
+    data.process.poly_detrend(degree=5)
+    data.process.gaussian_filter(sigma_ms=100)
+    data.process.find_peaks(period_percent=0.6, prominence=5)
+    data.process.average_detrend(outlier_mode_proportion=1.8, keep_og=False)
+    data.process.calc_phase_difference()
+    
+    fig = plt.figure(figsize=(16, 8))
+    gs = fig.add_gridspec(4,2)
+    
+    # Plot data
+    ax1 = plt.subplot(gs[:2, :])
+    plt.plot(data.times, data.ch1, label=f'Ch1 ({data.metadata.ch1})')
+    plt.plot(data.times, data.ch2, label=f'Ch1 ({data.metadata.ch1})')
+    plt.xlabel('time (s)')
+    plt.title('Data')
+    
+    # Plot inset of data
+    plt.subplot(gs[2, 0])
+    plt.plot(data.times, data.ch1)
+    plt.plot(data.times, data.ch2)
+    plt.title('Zoom in')
+    plt.xlabel('time (s)')
+    plt.xlim(10, 30)
+    
+    # Plot phase
+    plt.subplot(gs[2, 1], sharex=ax1)
+    plt.plot(data.times, data.ch1_phase)
+    plt.plot(data.times, data.ch2_phase)
+    plt.title('Phase')
+    plt.xlabel('time (s)')
+    
+    # Plot sine of phase difference
+    plt.subplot(gs[3, 0], sharex=ax1)
+    plt.plot(data.times, data.K)
+    plt.axhline(0, color='0.6')
+    plt.ylim(-1.05, 1.05)
+    plt.xlabel('time (s)')
+    
+    uss_row = upstroke_stats[upstroke_stats['#rec'] == data.metadata.file.stem]
+    uss_row = next(uss_row.itertuples())
+    plt.title(f'Sine phase difference | K = {np.mean(data.K):.2f} ± {np.std(data.K):.2f} | upstroke lag = {uss_row.mean:.2f}±{uss_row.std:.2f}')
+    
+    # Plot phase difference
+    plt.subplot(gs[3, 1], sharex=ax1)
+    plt.plot(data.times, data.ch1_phase - data.ch2_phase)
+    plt.axhline(0, color='0.6')
+    has_full_turn = np.nanmax(np.abs(
+            np.diff( (data.ch1_phase - data.ch2_phase)[::int(data.metadata.sampling_rate)] )
+                    )) > 3
+    plt.title('Phase difference | Has full turn: ' + ('No', 'Yes')[int(has_full_turn)])
+    plt.xlabel('time (s)')
+    plt.xlim(data.times.min(), data.times.max())
+        
+    # Format
+    plt.suptitle(data.metadata.file.stem)
+    plt.tight_layout()
+    
+    # Save and close
+    plt.savefig(save_dir + f'/{data.metadata.file.stem}.png')
+    plt.close(fig)
+    
+    # Store data
+    with open(write_file, 'a') as writefile:
+        print(file.stem, np.mean(data.K), np.std(data.K), has_full_turn,
+              file=writefile, sep=',')
+    
+
+#%% Plot phase differences vs upstroke lags
+
+# data_dir = Path('/data/marcos/FloClock_data/output')
+data_dir = Path('/home/user/Documents/Doctorado/Fly clock/FlyClock_data/output/')
+upstroke_file = data_dir / 'upstroke_delay_stats.dat'
+phase_diff_file = data_dir / 'phase_differences.csv'
+
+upstroke_stats = pd.read_csv(upstroke_file, sep=r'\s+').sort_values('#rec').reset_index(drop=True)
+phase_diff = pd.read_csv(phase_diff_file, sep=r'\s+').sort_values('name').reset_index(drop=True)
+
+plt.plot(upstroke_stats['mean'], phase_diff.phase_diff, 'o')
+

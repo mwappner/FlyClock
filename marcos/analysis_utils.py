@@ -590,7 +590,7 @@ class Processors:
             self.calc_magnitudes_and_phases(channels)
         
         ch1, ch2 = self._get_channels(channels + '_phase')
-        K = np.cos(ch1 - ch2)
+        K = np.sin(ch1 - ch2)
         data[ (channels + '_K').strip('_') ] = K
         
         self._add_process_entry('phase_diff', channels=channels)
