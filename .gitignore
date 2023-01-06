@@ -31,6 +31,8 @@ MANIFEST
 para_luis/data/
 para_luis/todos los registros/
 para_luis/output/
+FlyClock_data/
+FloClock pics/
 .idea/
 *.nb
 *.abf
