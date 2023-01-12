@@ -36,11 +36,17 @@ class RunInfo:
     @guide.setter
     def guide(self, guide_info):
         self._guide = guide_info
-        self._ch1 = guide_info.ch1
-        self._ch2 = guide_info.ch2
-        self._pair = guide_info.par
-        self._raw_sampling_rate = guide_info.samplerate
-        self._duration_min = guide_info._6 # this is the duration in minutes, encoded like this because namedtuples
+        self._ch1 = guide_info['ch1']
+        self._ch2 = guide_info['ch2']
+        self._pair = guide_info['par']
+        self._raw_sampling_rate = guide_info['samplerate']
+        self._duration_min = guide_info['duration(min)'] # this is the duration in minutes, encoded like this because namedtuples
+        
+        if 'mec_start' in guide_info:
+            self._mec_start_sec = guide_info['mec_start(sec)']
+        if 'comment' in guide_info:
+            self._comment = guide_info['comment']
+        
     @property
     def ch1(self):
         return self._ch1
@@ -56,7 +62,12 @@ class RunInfo:
     @property
     def raw_sampling_rate(self):
         return self._raw_sampling_rate
-    
+    @property
+    def mec_start_sec(self):
+        return self._mec_start_sec
+    @property
+    def comment(self):
+        return self._comment
 
 @pd.api.extensions.register_dataframe_accessor("process")
 class Processors:
@@ -938,6 +949,9 @@ def add_run_info(data, file):
     pair_guide_file = file.parent / 'par_guide.xlsx'
     pair_guide = pd.read_excel(pair_guide_file)
     run_info = next(pair_guide[pair_guide.name == file.stem].itertuples())
+    
+    # convert run info into a dict; skip first element, because it's the index
+    run_info = {k:v for k, v in zip(pair_guide.columns, run_info[1:])}
     
     data.metadata.guide = run_info
     data.metadata.file = file
