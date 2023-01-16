@@ -1406,18 +1406,31 @@ for i, file in enumerate(data_files):
 
 from scipy import interpolate
 
-data_dir = '/data/marcos/FloClock_data/data - mecamilamina'
-data_dir = Path(data_dir) / 'output' / 'peak_property_densities' 
+data_dir = Path('/data/marcos/FloClock_data/data - mecamilamina')
+peak_prop_dir = data_dir / 'output' / 'peak_property_densities' 
 save_dir = '/data/marcos/FloClock pics/mecamilamina'
 
-stats_file = data_dir / 'stats.csv'
-data_files = contenidos(data_dir)
+stats_file = peak_prop_dir / 'stats.csv'
+data_files = contenidos(peak_prop_dir)
+pair_guide_file = data_dir / 'par_guide.xlsx'
 
+# load data
 data = {file.stem: pd.read_csv(file) for file in data_files if 'stats' not in file.stem}
 stats = pd.read_csv(stats_file)
+pair_guide = pd.read_excel(pair_guide_file)
 data_example = data[stats.output_file[0]]
 
+# construct a daraframe containing the duration of each run
+durations = pd.concat([
+    pair_guide.loc[:, ['ch1', 'duration(min)', 'name']].rename(columns={'ch1':'ch'}), 
+    pair_guide.loc[:, ['ch2', 'duration(min)', 'name']].rename(columns={'ch2':'ch'})
+    ]).sort_values(['ch', 'duration(min)'], ascending=(False, False), ignore_index=True)
+durations['duration(sec)'] = durations['duration(min)'] * 60
+
+# plot stuff
 fig, axarr = plt.subplots(4,1, sharex=True, figsize=(12, 8), constrained_layout=True)
+fig_d, (ax_d1, ax_d2) = plt.subplots(2,1, sharex=True, figsize=(12, 8), constrained_layout=True)
+
 colors = {'R': '0.3', 'L': 'C0', 'S': 'C1'}
 averages = {col:{ch:[] for ch in 'RLS'} for col in data_example.columns[1:]}
 for i, row in stats.iterrows():
@@ -1428,20 +1441,23 @@ for i, row in stats.iterrows():
     zero_index = np.argmin(np.abs(times))
     for j, (ax, col) in enzip(axarr, df.columns[1:]):
         x = df[col].values
-        # c = f'C{j}'
+    
+        # plot the line        
         c = colors[row.channel]
-        
-        ax.plot(times, x/x[zero_index], color=c, alpha=0.6)
+        ax.plot(times, x/x[zero_index], color=c, alpha=0.6)       
         
         # save data interpolatero for later averaging
         averages[col][row.channel].append(
             interpolate.interp1d(times, x/x[zero_index], bounds_error=False, fill_value=np.nan))
+        
+    for j, (ch, _, _, duration) in durations[durations.name==row.data_file].iterrows():
+        ax_d2.plot([times[0], times[0]+duration], [j, j], color=colors[ch])
 
 ## Figure for averages
 fig2, axarr2 = plt.subplots(4,1, sharex=True, figsize=(12, 8), constrained_layout=True)
 
 average_line_handles = {ch:None for ch in 'RLS'}
-for ax, col in zip(axarr2, df.columns[1:]):
+for i, (ax, col) in enzip(axarr2, df.columns[1:]):
     
     # plot averages
     time_range = -350, 2000
@@ -1454,19 +1470,47 @@ for ax, col in zip(axarr2, df.columns[1:]):
         line, = ax.plot(average_times, average, color=colors[ch], label=ch)
         ax.fill_between(average_times, average-deviation, average+deviation, color=colors[ch], alpha=0.2)
         
+        if i == 0:
+            ax_d1.plot(average_times, average, color=colors[ch], label=ch)
+            ax_d1.fill_between(average_times, average-deviation, average+deviation, color=colors[ch], alpha=0.2)
+            ax_d1.set_title(col)
+            
         average_line_handles[ch] = line
 
 # format plots
-for ax in (*axarr.flat, *axarr2.flat):
+for ax in (*axarr.flat, *axarr2.flat, ax_d1, ax_d2):
     ax.set_title(col)
     ax.set_ylim(-0.1, 2)
     ax.set_xlim(time_range)
     ax.axvline(0, color='0.5')
+    
+ax_d2.set_ylim(-1, len(durations))
 
-axarr[0].legend(handles=average_line_handles.values(), labels=average_line_handles.keys())
-axarr2[0].legend(handles=average_line_handles.values(), labels=average_line_handles.keys())
+for ax in (axarr[0], axarr2[0], ax_d1):
+    ax.legend(handles=average_line_handles.values(), labels=average_line_handles.keys())
 
 # Save figures
 save_dir = Path(save_dir)
 fig.savefig(save_dir / 'Peak property density.png')
 fig2.savefig(save_dir / 'Peak propery densiy averages.png')
+fig_d.savefig(save_dir / 'Peak propery rec durations.png')
+
+#%%
+
+
+data_dir = Path('/data/marcos/FloClock_data/data - mecamilamina')
+pair_guide_file = data_dir / 'par_guide.xlsx'
+pair_guide = pd.read_excel(pair_guide_file)
+
+durations = pd.DataFrame()
+
+# construct a daraframe containing the duration of each run
+durations = pd.concat([
+    pair_guide.loc[:, ['ch1', 'duration(min)', 'name']].rename(columns={'ch1':'ch'}), 
+    pair_guide.loc[:, ['ch2', 'duration(min)', 'name']].rename(columns={'ch2':'ch'})
+    ]).sort_values(['ch', 'duration(min)'], ascending=(False, False), ignore_index=True)
+durations['duration(sec)'] = durations['duration(min)'] * 60
+
+colors = {'R': '0.3', 'L': 'C0', 'S': 'C1'}
+for i, (ch, _, duration) in durations.iterrows():
+    plt.plot([0, duration], [i, i], color=colors[ch])
