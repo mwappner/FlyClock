@@ -1491,6 +1491,7 @@ for ax in (axarr[0], axarr2[0], ax_d1):
 
 # Save figures
 save_dir = Path(save_dir)
+
 fig.savefig(save_dir / 'Peak property density.png')
 fig2.savefig(save_dir / 'Peak propery densiy averages.png')
 fig_d.savefig(save_dir / 'Peak propery rec durations.png')
