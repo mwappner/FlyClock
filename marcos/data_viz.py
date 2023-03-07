@@ -5,13 +5,16 @@ Created on Mon Jan  2 13:17:52 2023
 
 @author: marcos
 """
+import pickle
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
+from scipy import interpolate
 
-from utils import contenidos, enzip
+
+from utils import contenidos, enzip, find_point_by_value
 import analysis_utils as au
     
 #%% Visualize one run
@@ -19,7 +22,7 @@ import analysis_utils as au
 # Load data
 # data_dir = '/data/marcos/FloClock_data/data'
 data_dir = '/data/marcos/FloClock_data/data - mecamilamina'
-file_inx = 6
+file_inx = 9
 
 data_files = contenidos(data_dir, filter_ext='.abf')
 pair_guide_file = contenidos(data_dir, filter_ext='.xlsx').pop()
@@ -86,6 +89,7 @@ if hasattr(data.metadata, 'mec_start_sec'):
     
 for ax in 'abc':
     ax_dict[ax].set_xlim(30, 40)
+    # ax_dict[ax].set_xlim(data.metadata.mec_start_sec, data.metadata.mec_start_sec+100)
 for ax in 'xyz':
     ax_dict[ax].set_xlim(data.times.min(), data.times.max())
 for ax in 'abxy':
@@ -190,6 +194,143 @@ for i, file in enumerate(data_files):
         
     plt.savefig(save_dir + f'/{data.metadata.file.stem}.png')
     plt.close(fig)
+   
+    
+#%% Plot trendlines
+
+# Load data
+data_dir = '/data/marcos/FloClock_data/data - mecamilamina'
+save_dir = '/data/marcos/FloClock pics/mecamilamina/Trends'
+out_dir = '/data/marcos/FloClock_data/data - mecamilamina/output/polynomial_trends'
+
+file_inx = 0
+plot_all = False
+
+data_files = contenidos(data_dir, filter_ext='.abf')
+pair_guide_file = contenidos(data_dir, filter_ext='.xlsx').pop()
+
+iter_over = data_files if plot_all else (data_files[file_inx], )
+for i, file in enumerate(iter_over):
+    print(f'Running {file.stem}: {i+1}/{len(data_files)}')
+    
+    # Process data a bit
+    data = au.load_data(file, gauss_filter=True, override_raw=False)
+    data.process.lowpass_filter(filter_order=2, frequency_cutoff=10, keep_og=True)
+    data = data.process.downsample()
+    data.process.poly_detrend(degree=5, keep_og=True, channels='gfilt')
+    data.process.gaussian_filter(sigma_ms=100, keep_og=True, channels='gfilt')
+
+    # Plot data
+
+    # fig, axarr = plt.subplots(2, 1, constrained_layout=True, figsize=[10.54,  6.84], sharex=True)
+    # ax1, ax2 = axarr
+    
+    fig = plt.figure(figsize=[15,  6.5], tight_layout=True)
+    gs = fig.add_gridspec(2,2, height_ratios=[1, 4])
+    
+    ax1, ax2 = [fig.add_subplot(gs[0, i]) for i in range(2)]
+    
+    gs2 = gs[1, :].subgridspec(2,1)
+    ax = fig.add_subplot(gs2[0])
+    ax_trend = fig.add_subplot(gs2[1], sharex=ax)
+    
+    axes = [ax1, ax2, ax, ax_trend]
+    
+    # plot data and trendlines
+    ax1.plot(data.times, data.ch1_gfilt_gfilt2 )
+    ax1.plot(data.times, data.process.get_trend(1), c='C03')
+    ax2.plot(data.times, data.ch2_gfilt_gfilt2 , c='C01')
+    ax2.plot(data.times, data.process.get_trend(2), c='C03')
+    
+    # plot detrended very smoothed data
+    ax.plot(data.times, data.ch1_gfilt_gfilt2 - data.process.get_trend(1))
+    ax.plot(data.times, data.ch2_gfilt_gfilt2 - data.process.get_trend(2))
+    
+    # plot trends
+    ch1_line, = ax_trend.plot(data.times, data.process.get_trend(1), label=f'ch1 ({data.metadata.ch1})')
+    ch2_line, = ax_trend.plot(data.times, data.process.get_trend(2), label=f'ch2 ({data.metadata.ch2})')
+    
+    
+    # Plot mec start line, if needed
+    if hasattr(data.metadata, 'mec_start_sec'):
+        for axi in axes:
+            mec_line = axi.axvline(data.metadata.mec_start_sec, ls='--', c='k', label='mec start')
+        
+        fig.legend(handles=[mec_line], loc='upper right', bbox_to_anchor=(.95, 0.97))
+
+    # Format plots
+    for axi in axes:
+        axi.set_xlim(data.times.min(), data.times.max())
+
+    fig.suptitle(data.metadata.file.stem + '\n\n')
+    fig.legend(handles=[ch1_line, ch2_line], ncol=2, loc='upper left', bbox_to_anchor=(.05, 0.97))
+
+    ax_trend.set_xlabel('Time [seconds]')
+    ax_trend.set_title('Trendline')
+    ax.set_title('Detrended data')
+    
+    # ax2.legend(loc='upper right')
+        
+    # Save and close
+    if plot_all:
+        plt.savefig(save_dir + f'/{data.metadata.file.stem}.png')
+        plt.close(fig)
+        
+        for ch in (1,2):
+            with open(out_dir + f'/{data.metadata.file.stem}_ch{ch}.pickle', 'wb') as f:
+                poly = data.process.get_trend_poly(ch)
+                pickle.dump(poly, f)
+    
+#%% Analize trendlines
+
+data_dir = '/data/marcos/FloClock_data/data - mecamilamina'
+poly_dir = Path(data_dir) / 'output' / 'polynomial_trends'
+
+data_files = contenidos(poly_dir, filter_ext='.pickle')
+pair_guide_file = contenidos(data_dir, filter_ext='.xlsx').pop()
+
+fig, ax = plt.subplots()
+
+# load trends
+polys = []
+for f in data_files:
+    with open(f, 'rb') as f:
+        poly = pickle.load(f)
+        polys.append(poly)
+    
+
+# pair guide
+pair_guide = pd.read_excel(pair_guide_file).sort_values('name', ignore_index=True)
+
+# construct a daraframe containing the duration of each run
+durations = pd.concat([
+    pair_guide.loc[:, ['ch1', 'duration(min)', 'name']].rename(columns={'ch1':'ch'}), 
+    pair_guide.loc[:, ['ch2', 'duration(min)', 'name']].rename(columns={'ch2':'ch'})
+    ]).sort_values('name', ignore_index=True)
+    #]).sort_values(['ch', 'name'], ascending=(True, True), ignore_index=True)
+durations['duration(sec)'] = durations['duration(min)'] * 60
+
+interpolators = []
+for i, (poly, dur, name) in enzip(polys, durations['duration(sec)'], durations.name):
+    # if i != 0:
+    #     continue
+    
+    mec_start = pair_guide[pair_guide.name==name]['mec_start(sec)'].values[0]
+
+    t = np.arange(0, dur, 0.01)
+    trend = poly(t) / np.abs(poly(mec_start))
+    ax.plot(t-mec_start, trend)
+    
+    interpolators.append(
+        interpolate.interp1d(t-mec_start, trend, bounds_error=False, fill_value=np.nan)
+        )
+
+time_range = -350, 2000
+average_times = np.linspace(*time_range, 1000)
+average = np.nanmean( [interp(average_times) for interp in interpolators], axis=0 )
+
+ax.plot(average_times, average, 'k', lw=2)
+
 
 #%% Single Lissajous figures
 
@@ -552,10 +693,10 @@ for i, file in enumerate(data_files):
 
 
 # Load data
-# data_dir = '/data/marcos/FloClock_data/data'
-data_dir = '/data/marcos/FloClock_data/data - mecamilamina'
+data_dir = '/data/marcos/FloClock_data/data'
+# data_dir = '/data/marcos/FloClock_data/data - mecamilamina'
 file_inx = 10
-outlier_mode_proportion = 5 #1.8 for normal runs
+outlier_mode_proportion = 1.8 #1.8 for normal runs
 
 data_files = contenidos(data_dir, filter_ext='.abf')
 
@@ -603,7 +744,7 @@ for ax, ax_p, ch in zip((ax1, ax2), (ax3, ax4), (1, 2)):
     trend_poly = P.fit(period_times[valid_period_inxs], valid_periods, 1)
     trendline, = ax_p.plot(data.times, trend_poly(data.times), 'C00', zorder=0.9)
     trends.append(trend_poly.convert().coef[1])
-
+    
     modes.append(period_mode)
 
 if hasattr(data.metadata, 'mec_start_sec'):
@@ -630,7 +771,6 @@ ax3.legend(handles=[modeline, meanline, trendline], loc='upper left',
 ax4.legend(handles=[trendline], loc='upper left', labels=[f'slope={trends[1]*1000:.1f}e3'])
     
 print('Running', data.metadata.file.stem)
-
 
 #%% Plot and save all time dependent periods
 
@@ -889,90 +1029,152 @@ for i, file in enumerate(data_files):
     plt.close(fig)
 
 
-#%% Hilbert on rolling average detrended data
 
-# from mpl_toolkits.axes_grid1.inset_locator import inset_axes
+#%% Hilbert and phase difference on rolling average detrended data
 
+from scipy.signal import find_peaks
+
+def calc_stats(x, **hist_kwargs):
+    """ Calculate the mode, mean and standard deviation of the data in x. Since
+    the mode of a continuos quantity requires binning, hist_kwargs is passed to
+    numpy.hitogram to customize the binning."""
+    x = x[~np.isnan(x)]
+    counts, bins = np.histogram(x, **hist_kwargs)
+    bin_centers = bins[:-1] + np.diff(bins)/2
+    
+    remove = 10 # ignore a few points from each end of the histogram, assuming 
+    # the mode we are itnerested in is somewhat close to the center 
+    mode = bin_centers[ remove + np.argmax(counts[remove:-remove]) ]
+    mean = np.mean(x)
+    std = np.std(x)
+    
+    return mode, mean, std
+
+def calc_thresholds(x, has_full_turn):
+    
+    x = x[~np.isnan(x)]
+    
+    if not has_full_turn:
+        thresholds = x.min(), x.max()
+    else:
+                
+        counts, bins = np.histogram(x, bins=100, density=True)
+        plt.axvline(mode, c='k')
+        max_loc = 10 + np.argmax(counts[10:-10])
+        bin_centers = bins[:-1] + np.diff(bins)/2
+        
+        P = np.polynomial.Polynomial
+        left_counts = counts[:max_loc]
+        left_bins = bin_centers[:max_loc]
+        right_counts = counts[max_loc:]
+        right_bins = bin_centers[max_loc:]
+        
+        left = P.fit(left_bins, left_counts, deg=2)
+        right = P.fit(right_bins, right_counts, deg=2)
+        
+        b, a = left.convert().coef[1:]
+        t1 = -b/(2*a)
+        if a<0 or not left_bins.min() < t1 < left_bins.max():
+            t1 = left_bins[ np.argmin(left_counts) ]
+                
+        b, a = right.convert().coef[1:]
+        t2 = -b/(2*a)
+        if a<0 or not right_bins.min() < t2 < right_bins.max():
+            t2 = right_bins[ np.argmin(right_counts) ]
+        
+        # plt.figure()
+        # counts, bins, _ = plt.hist(x, bins=100, density=True)
+        
+        # plt.plot(bin_centers[:max_loc], counts[:max_loc], 'r')
+        # plt.plot(bin_centers[max_loc:], counts[max_loc:], 'g')
+        
+        # plt.plot(bins, left(bins))
+        # plt.plot(bins, right(bins))
+        
+        # plt.ylim(-0.1, max(counts)*1.1)
+        
+        # plt.axvline(t1)
+        # plt.axvline(t2)
+        
+        thresholds = t1, t2
+        
+    return thresholds
+
+def find_slips(data):
+    
+    t = data.times
+    k = data.K
+    x = data.ch1_phase - data.ch2_phase
+    
+    inx_max, _ = find_peaks(k, height=1-1e-2)
+    inx_min, _ = find_peaks(-k, height=1-1e-2)
+
+    max_df = pd.DataFrame({'pos': inx_max, 'is_max': np.full(inx_max.shape, True)})
+    min_df = pd.DataFrame({'pos': inx_min, 'is_max': np.full(inx_min.shape, False)})
+    
+    extrema = pd.concat([max_df, min_df]).sort_values('pos').reset_index(drop=True)
+       
+    # find points that may be jumps: 
+    #   - if one is a minumum the next is a maximum or viceversa
+    #   - one point and the next one are no more than 3 seconds apart
+    #   - the value o K monotonically changes between the points
+    starts = []
+    ends = []
+    i = 0
+    while i<len(extrema)-1:
+        
+        ismax = extrema.is_max.values[i]
+        pos1 = extrema.pos[i]
+        pos2 = extrema.pos[i+1]
+        # if the current point is different form the next one, add both and skip one
+        if ismax != extrema.is_max.values[i+1] and t[pos2]-t[pos1] < 3:
+            
+            jump_sign = np.sign(k[pos1] - k[pos2])
+            
+            if all( s==jump_sign for s in np.sign(np.diff(extrema[pos1:pos2])) ):
+                starts.append(i)
+                ends.append(i+1)
+        i += 1
+    
+    # store in a dataframe the locations of the starts and ends of the jumps
+    jumps = extrema.loc[starts].rename(columns={'pos':'starts'}).reset_index(drop=True)
+    jumps['ends'] = extrema.loc[ ends, 'pos'].reset_index(drop=True)
+    jumps['duration'] = jumps.ends - jumps.starts
+    # add to the dataframe columns that make the jump a bit wider in either direction
+    jumps['pre_start'] = jumps.starts - (jumps.duration/2).astype(int)
+    jumps.loc[jumps.pre_start<0, 'pre_start'] = 0
+    jumps['post_end'] = jumps.ends + (jumps.duration/2).astype(int)
+    jumps.loc[jumps.post_end>=len(t), 'post_end'] = len(t) - 1
+    
+    # make a boolean array stat stores the locations where a jump is occurring
+    invalid_locs = np.full(t.shape, False)
+    for start, end in zip(jumps.pre_start, jumps.post_end):
+        invalid_locs[start:end] = True
+    
+    # plt.figure()
+    # ax1 = plt.subplot(2,1,1)
+    # plt.plot(t, k, 'k')
+    # plt.scatter(t[extrema.pos], k[extrema.pos], c=extrema.is_max, cmap='bwr', zorder=3)
+    # for start, end in zip(jumps.starts, jumps.ends):
+    #     plt.plot(t[start:end], k[start:end], 'm')    
+    
+    # plt.subplot(2,1,2, sharex=ax1)
+    # plt.plot(t, x, 'k')
+    # plt.scatter(t[extrema.pos], x[extrema.pos], c=extrema.is_max, cmap='bwr', zorder=3)
+    # # plt.scatter(t[consecutive.pos], x[consecutive.pos], c=consecutive.is_max, cmap='PiYG', zorder=3.1, marker='x')
+    # for start, end in zip(jumps.starts, jumps.ends):
+    #     plt.plot(t[start:end], x[start:end], 'm')    
+        
+    
+    return jumps, invalid_locs
+    
 # Load data
 data_dir = '/data/marcos/FloClock_data/data'
-# data_dir = '/home/user/Documents/Doctorado/Fly clock/FlyClock_data/data/'
-file_inx = 13
-
-data_files = contenidos(data_dir, filter_ext='.abf')
-
-upstrokes_stat_file = Path(data_dir) / '../output' / 'upstroke_delay_stats.dat'
-upstrokes_stat_file.resolve()
-upstroke_stats = pd.read_csv(upstrokes_stat_file, sep=r'\s+')
-
-# Process data a bit
-data = au.load_data(data_files[file_inx], gauss_filter=True, override_raw=True)
-data = data.process.downsample()
-data.process.poly_detrend(degree=5)
-data.process.gaussian_filter(sigma_ms=100)
-data.process.find_peaks(period_percent=0.6, prominence=5)
-data.process.average_detrend(outlier_mode_proportion=1.8, keep_og=False)
-data.process.calc_phase_difference()
-
-fig = plt.figure(figsize=(16, 8))
-gs = fig.add_gridspec(4,2)
-
-# Plot data
-ax1 = plt.subplot(gs[:2, :])
-plt.plot(data.times, data.ch1, label=f'Ch1 ({data.metadata.ch1})')
-plt.plot(data.times, data.ch2, label=f'Ch1 ({data.metadata.ch1})')
-plt.xlabel('time (s)')
-plt.title('Data')
-
-# Plot inset of data
-plt.subplot(gs[2, 0])
-plt.plot(data.times, data.ch1)
-plt.plot(data.times, data.ch2)
-plt.title('Zoom in')
-plt.xlabel('time (s)')
-plt.xlim(10, 30)
-
-# Plot phase
-plt.subplot(gs[2, 1], sharex=ax1)
-plt.plot(data.times, data.ch1_phase)
-plt.plot(data.times, data.ch2_phase)
-plt.title('Phase')
-plt.xlabel('time (s)')
-
-# Plot sine of phase difference
-plt.subplot(gs[3, 0], sharex=ax1)
-plt.plot(data.times, data.K)
-plt.axhline(0, color='0.6')
-plt.ylim(-1.05, 1.05)
-plt.xlabel('time (s)')
-
-uss_row = upstroke_stats[upstroke_stats['#rec'] == data.metadata.file.stem]
-uss_row = next(uss_row.itertuples())
-plt.title(f'Sine phase difference | K = {np.mean(data.K):.2f} ± {np.std(data.K):.2f} | upstroke lag = {uss_row.mean:.2f}±{uss_row.std:.2f}')
-
-# Plot phase difference
-plt.subplot(gs[3, 1], sharex=ax1)
-plt.plot(data.times, data.ch1_phase - data.ch2_phase)
-plt.axhline(0, color='0.6')
-has_full_turn = np.nanmax(np.abs(
-        np.diff( (data.ch1_phase - data.ch2_phase)[::int(data.metadata.sampling_rate)] )
-                )) > 3
-plt.title('Phase difference | Has full turn: ' + ('No', 'Yes')[int(has_full_turn)])
-plt.xlabel('time (s)')
-plt.xlim(data.times.min(), data.times.max())
-
-# Format
-plt.suptitle(data.metadata.file.stem)
-plt.tight_layout()
-print('Running', data.metadata.file.stem)
-
-
-#%% Plot and save all phase differences on rolling average detrended data
-
-# Load data
-data_dir = '/data/marcos/FloClock_data/data'
-save_dir = '/data/marcos/FloClock pics/Hilbert phase'
+save_dir = '/data/marcos/FloClock pics/Hilbert phase outliers'
 # data_dir = '/home/user/Documents/Doctorado/Fly clock/FlyClock_data/data/'
 # save_dir = '/home/user/Documents/Doctorado/Fly clock/FlyClock pics/Hilbert phase'
+file_inx = 12
+plot_all = True
 
 data_files = contenidos(data_dir, filter_ext='.abf')
 
@@ -980,13 +1182,15 @@ upstrokes_stat_file = Path(data_dir) / '../output' / 'upstroke_delay_stats.dat'
 upstrokes_stat_file.resolve()
 upstroke_stats = pd.read_csv(upstrokes_stat_file, sep=r'\s+')
 
-write_file = Path(data_dir) / '../output' / 'phase_differences.csv'
+write_file = Path(data_dir) / '../output' / 'phase_differences_outliers.csv'
 write_file.resolve()
 
-with open(write_file, 'a') as writefile:
-    writefile.write('name,K,Kstd,hasturn\n')
-    
-for i, file in enumerate(data_files):
+if plot_all:
+    with open(write_file, 'w') as writefile:
+        writefile.write('name,K,Kstd,hasturn,modelag,meanlag,stdlag\n')
+
+iter_over = data_files if plot_all else (data_files[file_inx], )
+for i, file in enumerate(iter_over):
     print(f'Running {file.stem}: {i+1}/{len(data_files)}')
     
     # Process data a bit
@@ -999,95 +1203,155 @@ for i, file in enumerate(data_files):
     data.process.calc_phase_difference()
     
     fig = plt.figure(figsize=(16, 8))
-    gs = fig.add_gridspec(4,2)
+    gs = fig.add_gridspec(4,4)
+    
+    ax_timeseries = plt.subplot(gs[:2, :3])
+    ax_Khist = plt.subplot(gs[0, 3])
+    ax_laghist = plt.subplot(gs[1, 3])
+    ax_zoom = plt.subplot(gs[2, :2])
+    ax_phase = plt.subplot(gs[2, 2:], sharex=ax_timeseries)
+    ax_K = plt.subplot(gs[3, :2], sharex=ax_timeseries)
+    ax_diff = plt.subplot(gs[3, 2:], sharex=ax_timeseries)
     
     # Plot data
-    ax1 = plt.subplot(gs[:2, :])
-    plt.plot(data.times, data.ch1, label=f'Ch1 ({data.metadata.ch1})')
-    plt.plot(data.times, data.ch2, label=f'Ch1 ({data.metadata.ch1})')
-    plt.xlabel('time (s)')
-    plt.title('Data')
+    ax_timeseries.plot(data.times, data.ch1, label=f'Ch1 ({data.metadata.ch1})')
+    ax_timeseries.plot(data.times, data.ch2, label=f'Ch1 ({data.metadata.ch1})')
+    ax_timeseries.set_xlabel('time (s)')
+    ax_timeseries.set_title('Data')
     
-    # Plot inset of data
-    plt.subplot(gs[2, 0])
-    plt.plot(data.times, data.ch1)
-    plt.plot(data.times, data.ch2)
-    plt.title('Zoom in')
-    plt.xlabel('time (s)')
-    plt.xlim(10, 30)
+    # Plot zoom of data
+    ax_zoom.plot(data.times, data.ch1)
+    ax_zoom.plot(data.times, data.ch2)
+    ax_zoom.set_title('Zoom in')
+    ax_zoom.set_xlabel('time (s)')
+    ax_zoom.set_xlim(10, 30)
     
     # Plot phase
-    plt.subplot(gs[2, 1], sharex=ax1)
-    plt.plot(data.times, data.ch1_phase)
-    plt.plot(data.times, data.ch2_phase)
-    plt.title('Phase')
-    plt.xlabel('time (s)')
+    ax_phase.plot(data.times, data.ch1_phase)
+    ax_phase.plot(data.times, data.ch2_phase)
+    # ax_phase.plot(data.times[:-1], np.diff(data.ch1_phase - data.ch2_phase))
+    ax_phase.set_title('Phase')
+    ax_phase.set_xlabel('time (s)')
     
     # Plot sine of phase difference
-    plt.subplot(gs[3, 0], sharex=ax1)
-    plt.plot(data.times, data.K)
-    plt.axhline(0, color='0.6')
-    plt.ylim(-1.05, 1.05)
-    plt.xlabel('time (s)')
+    ax_K.plot(data.times, data.K)
+    ax_K.axhline(0, color='0.6')
+    ax_K.set_ylim(-1.05, 1.05)
+    ax_K.set_xlabel('time (s)')
     
     uss_row = upstroke_stats[upstroke_stats['#rec'] == data.metadata.file.stem]
     uss_row = next(uss_row.itertuples())
-    plt.title(f'Sine phase difference | K = {np.mean(data.K):.2f} ± {np.std(data.K):.2f} | upstroke lag = {uss_row.mean:.2f}±{uss_row.std:.2f}')
+    ax_K.set_title(f'Sine phase difference | K = {np.mean(data.K):.2f} ± {np.std(data.K):.2f} | upstroke lag = ({uss_row.mean:.2f} ± {uss_row.std:.2f})s')
     
     # Plot phase difference
-    plt.subplot(gs[3, 1], sharex=ax1)
-    plt.plot(data.times, data.ch1_phase - data.ch2_phase)
-    plt.axhline(0, color='0.6')
+    ax_diff.plot(data.times, data.ch1_phase - data.ch2_phase)
+    ax_diff.axhline(0, color='0.6')
     has_full_turn = np.nanmax(np.abs(
             np.diff( (data.ch1_phase - data.ch2_phase)[::int(data.metadata.sampling_rate)] )
                     )) > 3
-    plt.title('Phase difference | Has full turn: ' + ('No', 'Yes')[int(has_full_turn)])
-    plt.xlabel('time (s)')
-    plt.xlim(data.times.min(), data.times.max())
+    ax_diff.set_title('Phase difference | Has full turn: ' + ('No', 'Yes')[int(has_full_turn)])
+    ax_diff.set_xlabel('time (s)')
+    ax_diff.set_xlim(data.times.min(), data.times.max())
         
+    # Sine phase difference histogram
+    ax_Khist.hist(data.K, bins=100, density=True)
+    mode, *_ = calc_stats(data.K.values, bins=100)
+    
+    # thresholds = calc_thresholds(data.K, has_full_turn)
+    # outside_thresholds = np.logical_or( data.K.values<thresholds[0], data.K.values>thresholds[1] )    
+    # for thresh in thresholds:
+    #     ax_Khist.axvline(thresh, c='r')
+    _, invalid_locs = find_slips(data)    
+    
+    ax_Khist.set_xlabel('K')
+    ax_Khist.set_ylabel('density')
+    ax_Khist.set_title('Distribution of sine phase difference')
+    
+    # Lag histogram
+    period = np.mean([data.process.get_instant_period(ch) for ch in (1,2)], axis=0)
+    lag = np.arcsin(data.K) * period / (2*np.pi)
+    # lag = lag[~outside_thresholds]
+    lag = lag[~invalid_locs]
+    ax_laghist.hist(lag, bins=100, density=True)
+    mode_lag, mean_lag, std_lag = calc_stats(lag, bins=100)
+    ax_laghist.set_xlabel(r'lag = $\frac{T}{2\pi}\,asin(K)$ (s)')
+    ax_laghist.set_ylabel('density')    
+    ax_laghist.set_title(f'Distribution of lag | mode=({mode_lag:.2f}±{std_lag:.2f})s')
+    
+    # Mark outlier data
+    outlier_K = data.K.copy()
+    # outlier_K[~outside_thresholds] = np.nan
+    outlier_K[~invalid_locs] = np.nan
+    ax_K.plot(data.times, outlier_K, 'r')
+
+    outlier_diff = data.ch1_phase - data.ch2_phase
+    # outlier_diff[~outside_thresholds] = np.nan
+    outlier_diff[~invalid_locs] = np.nan
+    ax_diff.plot(data.times, outlier_diff , 'r')
+
     # Format
-    plt.suptitle(data.metadata.file.stem)
+    fig.suptitle(data.metadata.file.stem)
     plt.tight_layout()
     
-    # Save and close
-    plt.savefig(save_dir + f'/{data.metadata.file.stem}.png')
-    plt.close(fig)
-    
-    # Store data
-    with open(write_file, 'a') as writefile:
-        print(file.stem, np.mean(data.K), np.std(data.K), has_full_turn,
-              file=writefile, sep=',')
+    if plot_all:
+        # Save and close
+        fig.savefig(save_dir + f'/{data.metadata.file.stem}.png')
+        plt.close(fig)
+        
+        # Store data    
+        with open(write_file, 'a') as writefile:
+            print(file.stem, np.mean(data.K), np.std(data.K), has_full_turn, mode_lag, mean_lag, std_lag,
+                  file=writefile, sep=',')
     
 
 #%% Plot phase differences vs upstroke lags
 
 # from matplotlib import lines
-from utils import enzip
 
 data_dir = Path('/data/marcos/FloClock_data/output')
 # data_dir = Path('/home/user/Documents/Doctorado/Fly clock/FlyClock_data/output/')
 upstroke_file = data_dir / 'upstroke_delay_stats.dat'
 phase_diff_file = data_dir / 'phase_differences.csv'
 
+#load data and save it all to a single dataframe
 upstroke_stats = pd.read_csv(upstroke_file, sep=r'\s+').sort_values('#rec').reset_index(drop=True)
 phase_diff = pd.read_csv(phase_diff_file).sort_values('name').reset_index(drop=True)
+stats = pd.concat( [phase_diff, upstroke_stats.loc[:, [ '1', '2', 'mean', 'std']].rename(columns={'mean': 'upstroke_mean', 'std':'upstroke_std'})], axis='columns')
 
-plt.figure(figsize=(10, 6))
+names_dict = {
+    'upstroke' : {'name': 'upstroke_mean', 'error': 'upstroke_std', 'units': True, 'label': 'Upstroke lag'},
+    'mean' : {'name': 'meanlag', 'error': 'stdlag', 'units': True, 'label': 'Avg. sine phase diff. lag'},
+    'mode' : {'name': 'modelag', 'error': 'stdlag', 'units': True, 'label': 'Sine phase diff. lag mode'},
+    'K' : {'name': 'K', 'error': 'Kstd', 'units': False, 'label': 'Sine phase difference'},
+    }
+
+pair = 'upstroke', 'K'
+
+
+# add a few new columns
+stats['type'] = [n[:2] for n in stats['name']]
+stats['well_ordered'] = [ch1+ch2==t for ch1, ch2, t in zip(stats['1'], stats['2'], stats.type)]
+
+for name in names_dict.keys():
+    stats.loc[stats['well_ordered'], names_dict[name]['name'] ] *= -1
+
+
+plt.figure(figsize=(13, 6))
 
 ax1 = plt.subplot(1,2,1)
-plt.errorbar(upstroke_stats['mean'], phase_diff.K, xerr=upstroke_stats['std'], yerr=phase_diff.Kstd, fmt='.', color='0.7')
-plt.xlabel('Upstroke lag')
-plt.ylabel('Sine phase difference')
-plt.title('Upstroke lag - Sine phase difference correlation')
+plt.errorbar(stats[names_dict[pair[0]]['name']], stats[names_dict[pair[1]]['name']],
+             xerr = stats[names_dict[pair[0]]['error']], yerr = stats[names_dict[pair[1]]['error']],
+             fmt='.', color='0.7')
+plt.xlabel(names_dict[pair[0]]['label'])
+plt.ylabel(names_dict[pair[1]]['label'])
+# plt.title('Upstroke lag - Sine phase difference correlation')
+plt.title('Correlation')
 
 both_categories = []
-titles = 'Upstroke lag', 'Sine phase difference'
-for i, (df, name, order_param, title) in enzip(
-        [upstroke_stats, phase_diff], ('#rec', 'name'), ('mean', 'K'), titles):
-    df['type'] = [n[:2] for n in df[name]]
-    categories = {}
-    for cat in set(df['type']):
-        categories[cat] = df[order_param].values[df['type']==cat]
+for i, name in enumerate(pair):
+        
+    grouped = stats.groupby('type')
+    categories = {key:df[names_dict[name]['name']] for key, df in sorted(grouped)}
         
     categories['LL+SS'] = [*categories['LL'], *categories['SS']]
     categories['LR+SR'] = [*categories['LR'], *categories['SR']]
@@ -1095,7 +1359,10 @@ for i, (df, name, order_param, title) in enzip(
     plt.subplot(2,2,2*(i+1))
     plt.boxplot(categories.values())
     plt.gca().set_xticklabels(categories.keys())
-    plt.title(title)
+    plt.title(names_dict[name]['label'])
+    
+    if names_dict[name]['units']:
+        plt.ylabel('lag (s)')
     
     both_categories.append(categories)
     
@@ -1114,7 +1381,9 @@ for key in categories.keys():
 
 ax1.legend()
 plt.tight_layout()
-# plt.legend(handles=line_handles)
+
+plt.savefig(f'/data/marcos/FloClock pics/{pair[0]} vs {pair[1]}')
+
 
 #%% Find peak density
 
@@ -1404,8 +1673,6 @@ for i, file in enumerate(data_files):
             
 #%% Explore all peak prop densities
 
-from scipy import interpolate
-
 data_dir = Path('/data/marcos/FloClock_data/data - mecamilamina')
 peak_prop_dir = data_dir / 'output' / 'peak_property_densities' 
 save_dir = '/data/marcos/FloClock pics/mecamilamina'
@@ -1445,8 +1712,9 @@ for i, row in stats.iterrows():
         # plot the line        
         c = colors[row.channel]
         ax.plot(times, x/x[zero_index], color=c, alpha=0.6)       
+        ax.set_title(col)
         
-        # save data interpolatero for later averaging
+        # save data interpolator for later averaging
         averages[col][row.channel].append(
             interpolate.interp1d(times, x/x[zero_index], bounds_error=False, fill_value=np.nan))
         
@@ -1469,6 +1737,7 @@ for i, (ax, col) in enzip(axarr2, df.columns[1:]):
         
         line, = ax.plot(average_times, average, color=colors[ch], label=ch)
         ax.fill_between(average_times, average-deviation, average+deviation, color=colors[ch], alpha=0.2)
+        ax.set_title(col)
         
         if i == 0:
             ax_d1.plot(average_times, average, color=colors[ch], label=ch)
@@ -1479,7 +1748,7 @@ for i, (ax, col) in enzip(axarr2, df.columns[1:]):
 
 # format plots
 for ax in (*axarr.flat, *axarr2.flat, ax_d1, ax_d2):
-    ax.set_title(col)
+    # ax.set_title(col)
     ax.set_ylim(-0.1, 2)
     ax.set_xlim(time_range)
     ax.axvline(0, color='0.5')
@@ -1492,26 +1761,100 @@ for ax in (axarr[0], axarr2[0], ax_d1):
 # Save figures
 save_dir = Path(save_dir)
 
-fig.savefig(save_dir / 'Peak property density.png')
-fig2.savefig(save_dir / 'Peak propery densiy averages.png')
-fig_d.savefig(save_dir / 'Peak propery rec durations.png')
+# fig.savefig(save_dir / 'Peak property density.png')
+# fig2.savefig(save_dir / 'Peak propery densiy averages.png')
+# fig_d.savefig(save_dir / 'Peak propery rec durations.png')
 
-#%%
+#%% Plot mec runs just after mec
 
+# Load data
+# data_dir = '/data/marcos/FloClock_data/data'
+data_dir = '/data/marcos/FloClock_data/data - mecamilamina'
+save_dir = '/data/marcos/FloClock pics/mecamilamina/After mec/raw'
 
-data_dir = Path('/data/marcos/FloClock_data/data - mecamilamina')
-pair_guide_file = data_dir / 'par_guide.xlsx'
-pair_guide = pd.read_excel(pair_guide_file)
+file_inx = 6
+plot_all = True
+extension = 200 # in seconds after mec
 
-durations = pd.DataFrame()
+data_files = contenidos(data_dir, filter_ext='.abf')
+pair_guide_file = contenidos(data_dir, filter_ext='.xlsx').pop()
 
-# construct a daraframe containing the duration of each run
-durations = pd.concat([
-    pair_guide.loc[:, ['ch1', 'duration(min)', 'name']].rename(columns={'ch1':'ch'}), 
-    pair_guide.loc[:, ['ch2', 'duration(min)', 'name']].rename(columns={'ch2':'ch'})
-    ]).sort_values(['ch', 'duration(min)'], ascending=(False, False), ignore_index=True)
-durations['duration(sec)'] = durations['duration(min)'] * 60
+iter_over = data_files if plot_all else (data_files[file_inx], )
+for i, file in enumerate(iter_over):
+    print(f'Running {file.stem}: {i+1}/{len(data_files)}')
+    
+    # Process data a bit
+    data = au.load_data(file, gauss_filter=True, override_raw=False)
+    data = data.process.downsample()
+    data.process.poly_detrend(degree=5, channels='gfilt')
+    trends = [ data.process.get_trend(ch_inx) for ch_inx in (1,2) ]
+    data.process.gaussian_filter(sigma_ms=100, channels='gfilt')
+    data.process.poly_detrend(degree=15, channels='gfilt')
+    
+    # # Plot data
+    # mosaic_layout = """
+    #                 ab
+    #                 xx
+    #                 yy
+    #                 """
+    # fig, ax_dict = plt.subplot_mosaic(mosaic_layout, tight_layout=True, 
+    #                                   figsize=[15,  6.5], height_ratios=[1,3,1])
+    # comment = data.metadata.comment
+    # fig.suptitle(data.metadata.file.stem + '\n' + (comment if isinstance(comment, str) else ''))
+    
+    # ax1 = ax_dict['a']
+    # ax2 = ax_dict['b']
+    # ax = ax_dict['x']
+    # ax_trend = ax_dict['y']
+    
+    fig = plt.figure(figsize=[15,  6.5], tight_layout=True)
+    
+    gs = fig.add_gridspec(2,2, height_ratios=[1,4])
+    
+    ax1, ax2 = [fig.add_subplot(gs[0, i]) for i in range(2)]
+    
+    gs2 = gs[1, :].subgridspec(2,1,height_ratios=[3,1])
+    ax = fig.add_subplot(gs2[0])
+    ax_trend = fig.add_subplot(gs2[1], sharex=ax)
+    
+    # channel 1
+    ax1.plot(data.times, data.ch1 - trends[0] - data.process.get_trend(1), c='0.7')
+    ax1.plot(data.times, data.ch1_gfilt, c='C0')
+    ax1.set_title(f'ch1: {data.metadata.ch1}')
+    
+    # channel 2
+    ax2.plot(data.times, data.ch2 - trends[1] - data.process.get_trend(2), c='0.7')
+    ax2.plot(data.times, data.ch2_gfilt, c='C1')
+    ax2.set_title(f'ch2: {data.metadata.ch2}')
+    
+    # combined
+    mec_start = data.metadata.mec_start_sec
+    start = find_point_by_value(data.times, mec_start)
+    end = find_point_by_value(data.times, mec_start + extension)
+    plot_range = slice(start, end)
+    short_time = data.times[plot_range] - mec_start
+    
+    ax.plot(short_time, (data.ch1 - trends[0] - data.process.get_trend(1))[plot_range], c='0.7')
+    ax.plot(short_time, (data.ch2 - trends[1] - data.process.get_trend(2))[plot_range], c='0.7')
+    ax.plot(short_time, data.ch1_gfilt[plot_range])
+    ax.plot(short_time, data.ch2_gfilt[plot_range], alpha=0.6)
+    ax.set_ylim( max(ax.get_ylim()[0], -20), min( 40, ax.get_ylim()[1]) )
+    
+    ax_trend.set_xlim( 0, extension)
+    ax_trend.set_xlabel('time sinsce mec start (sec)')
+    
+    ax.set_title('Both channels after mec start')
 
-colors = {'R': '0.3', 'L': 'C0', 'S': 'C1'}
-for i, (ch, _, duration) in durations.iterrows():
-    plt.plot([0, duration], [i, i], color=colors[ch])
+    ax_trend.plot(short_time, (trends[0] + data.process.get_trend(1))[plot_range])
+    ax_trend.plot(short_time, (trends[1] + data.process.get_trend(2))[plot_range])
+
+    for axi in [ax1, ax2]:
+        mec_line = axi.axvline(mec_start, ls='--', c='k', label='mec start')
+        axi.set_xlabel('time (sec)')
+        axi.set_xlim(data.times.min(), data.times.max())
+    
+    if plot_all:
+        plt.savefig(save_dir + f'/{data.metadata.file.stem}.png')
+        plt.close(fig)
+        
+    

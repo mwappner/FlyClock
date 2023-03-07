@@ -191,6 +191,26 @@ class Processors:
         
         return period_times, periods
     
+    def get_instant_period(self, inx, outlier_mode_proportion=1.8, **hist_kwargs):
+        assert inx in (1,2, None), 'inx must be either 1 or 2, or None'
+        assert 'findpeaks' in self.steps, 'You must find peaks first'
+    
+        # find the mode of the periods        
+        period_times, periods = self.get_periods(inx)
+        counts, bins = np.histogram(periods, **hist_kwargs)
+        bin_centers = bins[:-1] + np.diff(bins) / 2
+        period_mode = bin_centers[np.argmax(counts)]
+    
+        #use the mode to select period values that are not too far from it    
+        valid_period_inxs = periods < outlier_mode_proportion*period_mode
+        valid_periods = periods[valid_period_inxs]
+        
+        #calculate the trend and return that as an instant period value
+        P = np.polynomial.Polynomial
+        trend_poly = P.fit(period_times[valid_period_inxs], valid_periods, 1)
+        
+        return trend_poly(self._df.times) 
+    
     def downsample(self, downsampling_rate=10):
         """
         Downsamples the data by skipping datapoints. Returns a new dataframe.
