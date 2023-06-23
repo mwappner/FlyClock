@@ -1,17 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Created on Tue Jan  3 15:35:04 2023
+Created on Tue May  2 18:29:58 2023
 
 @author: marcos
 """
 
 # from pathlib import Path
 import re
-import itertools
 
 import numpy as np
-from scipy import signal, interpolate, stats
+from scipy import signal, interpolate
 from scipy.ndimage import gaussian_filter1d
 from skimage import filters
 import pandas as pd
@@ -19,7 +18,7 @@ import pandas as pd
 import pyabf
 import pyabf.filter
 
-from utils import sort_by, enzip, calc_mode
+from utils import sort_by, enzip
 
 #%% Classes
 
@@ -69,9 +68,6 @@ class RunInfo:
     @property
     def comment(self):
         return self._comment
-    # @twochannel
-    # def twochannel():
-    #     return self._twochannel
 
 @pd.api.extensions.register_dataframe_accessor("process")
 class Processors:
@@ -130,21 +126,6 @@ class Processors:
         assert 'pdetrend' in self.steps, 'You must run a detrending job first'
         return self.trends[inx-1](self._df.times)
     
-    def get_hptrend(self, inx):
-        assert inx in (1,2), 'inx must be either 1 or 2'
-        assert 'hpfilt' in self.steps, 'You must run a detrending job first'
-        
-        # check if data was kept after the filter
-        step_info = self.get_step_info('hpfilt')
-        if not step_info['keep_og']:
-            raise ValueError("The data was not kept after filtering, so we can't calculate the trends")
-        
-        # calculate the trend as the difference between before and after applying the filter
-        applied_on = step_info['channels']
-        prefilt = self._get_channels(applied_on)[inx-1] # channel data on which the filter was applied
-        posfilt = self._get_channels(applied_on+'_hpfilt')[inx-1] # channel data of the applied filter
-        return prefilt-posfilt
-    
     def get_phase_difference(self, channels=None):
         """ Get the mean phase difference for the given channel, if it has been
         calculated. If channels=None, get the last one."""
@@ -179,29 +160,20 @@ class Processors:
         return self._df.times.values[self.peaks[inx-1]]
    
     def get_peak_values(self, inx, channels=None):
-        """ Returns the value of the series given in channel at the peaks that 
-        have been calculated. Note you can query the value of a channel for 
-        which the peaks have not been calculated, in which case the function 
-        will warn and continue working. in this context, channel refers to the 
-        name of the channel that reflects the operations that have been done on 
-        it, and not the channel index, which is 'inx'. """
-        
         assert inx in (1,2), 'inx must be either 1 or 2'
         assert 'findpeaks' in self.steps, 'You must find peaks first'
         
         if channels is not None and not self._check_if_action_was_performed_on_channel('findepakes', channels):
             print('WARNING: findpeaks was not performed on this channel')
         
-        if channels is None: # defalt to calculating peaks on the channel where findpeaks was done
+        if channels is None:
             channels = self.get_step_info('findpeaks')['channels']
         ch_pair = self._get_channels(channels)
         return ch_pair[inx-1].values[self.peaks[inx-1]]
     
     def get_avg_period(self, inx=None):
-        """ Calculate the average (mean) period for channel 1 or 2 if inx=1 or
-        inx=1, or the average across channels if inx=None"""
-        
         assert inx in (1,2, None), 'inx must be either 1 or 2, or None'
+        assert 'findpeaks' in self.steps, 'You must find peaks first'
         
         if inx is None:
             ch1_period = np.mean( np.diff(self.get_peak_pos(1)))
@@ -209,25 +181,25 @@ class Processors:
             return np.mean((ch1_period, ch2_period))
         else:
             return np.mean( np.diff(self.get_peak_pos(inx)))
-        
     def get_periods(self, inx):
-
+        assert inx in (1,2, None), 'inx must be either 1 or 2, or None'
+        assert 'findpeaks' in self.steps, 'You must find peaks first'
+        
         peak_pos = self.get_peak_pos(inx)
         periods = np.diff(peak_pos)
         period_times = peak_pos[:-1] + np.diff(peak_pos ) / 2
         
         return period_times, periods
-        
+    
     def get_instant_period(self, inx, outlier_mode_proportion=1.8, **hist_kwargs):
-        """ Calculate a trend for the value of the period of the recording as
-        time passes. Return a linear fit to all the period values calculated"""
+        assert inx in (1,2, None), 'inx must be either 1 or 2, or None'
+        assert 'findpeaks' in self.steps, 'You must find peaks first'
     
         # find the mode of the periods        
         period_times, periods = self.get_periods(inx)
-        # counts, bins = np.histogram(periods, **hist_kwargs)
-        # bin_centers = bins[:-1] + np.diff(bins) / 2
-        # period_mode = bin_centers[np.argmax(counts)]
-        period_mode = calc_mode(periods)    
+        counts, bins = np.histogram(periods, **hist_kwargs)
+        bin_centers = bins[:-1] + np.diff(bins) / 2
+        period_mode = bin_centers[np.argmax(counts)]
     
         #use the mode to select period values that are not too far from it    
         valid_period_inxs = periods < outlier_mode_proportion*period_mode
@@ -239,140 +211,6 @@ class Processors:
         
         return trend_poly(self._df.times) 
     
-    def get_crossings(self, inx, edge, threshold=5, peak_min_distance=0.5, channels=None):
-        """
-        Calculate the point at which the signal crosses the threshold at each
-        rising edge or each falling edge, depending on the value of 'edge'.
-
-        Parameters
-        ----------
-        inx : int
-            1 or 2, the channel for which periods are being calculated.
-        edge : str
-            either 'falling' or 'rising'. The kind of edge for which the period
-            is calculated. If kind='rising', the function will look for a rising
-            edge crossing before the peak. If kind='falling', the crossing will
-            happen after the peak.
-        threshold : float, optional
-            Value of the threshold at which the crossing is calculated. 
-            Additionally, if a peak value falls under the threshold, that peak
-            is ignored. The default is 5, which assumes the data has been 
-            detrended.
-        peak_min_distance : floar, optional
-            The minimum distance between peaks, in units of average distance
-            between peaks. After one peak is used, any subsequent peaks closer
-            than this value will be ignored. The default is 0.5.
-
-        Returns
-        -------
-        crossings : numpy array
-            Array containing indexes at which the requested crossings happen
-        """
-        
-        
-        assert edge in ('rising', 'falling'), 'edge must be one of "rising" or "falling"'
-        assert inx in (1,2), 'inx must be either 1 or 2'
-        assert 'findpeaks' in self.steps, 'You must find peaks first'
-        
-        # check if findpeaks was done on the requested channel (for example, gauss_filt)
-        # if not, warn and continue
-        if channels is not None and not self._check_if_action_was_performed_on_channel('findepakes', channels):
-            print('WARNING: findpeaks was not performed on this channel')
-        
-        # default to using the channel on which findpeaks was performed
-        if channels is None: 
-            channels = self.get_step_info('findpeaks')['channels']
-        ch_pair = self._get_channels(channels)
-        data = ch_pair[inx-1].values
-        
-        # retrieve peak data
-        peaks = self.peaks[inx-1]
-        mean_period_in_points = round(np.mean(np.diff(peaks)))
-        
-        crossings = []
-        prev_peak = -np.inf # to prime the first peak
-        
-        # iterate over all peaks
-        for peak in peaks:
-            
-            # skip maxima that are too low
-            if data[peak] < threshold:
-                continue
-             
-             # skip maxima that are too close together
-            if peak - prev_peak < mean_period_in_points * peak_min_distance:
-                continue
-            
-            if edge == 'rising':
-                # find rising edge point (before peak)
-                interval = data[:peak]
-                try:
-                    cross = np.nonzero(interval < threshold)[0][-1]
-                except IndexError: 
-                # this raises when we have the first peak and don't cross the threshold before the start of the signal
-                    cross = 0
-                                   
-            else:
-                # find falling edge point (after peak)    
-                starting_point = min(peak + int(mean_period_in_points / 2), len(data))
-                interval = data[:starting_point]
-                cross = np.nonzero(interval > threshold)[0][-1]
-            
-            crossings.append(cross)
-            prev_peak = peak
-        
-        if not crossings: # no peaks were found overthe threshold
-            raise ValueError(f"It's likely no peaks were found over the given threshold value of {threshold}. Or maybe something else is wrong. Are you sure you have peaks?")
-
-        crossings = np.asarray(crossings)
-        return crossings
-    
-    def get_edge_periods(self, inx, edge, threshold=5, peak_min_distance=0.5):
-        """
-        Calculate the period as the distance between points at which consecutive
-        cycles cross the threshold. The crossing must be either a rising or 
-        falling edge, depending on "kind". To perform this action, the user must
-        already have performed a findpeaks actions. The crossings are calculated
-        with respect to peaks of the signal. Peaks that are under the threshold
-        or are too close together are ignored.
-
-        Parameters
-        ----------
-        inx : int
-            1 or 2, the channel for which periods are being calculated.
-        edge : str
-            either 'falling' or 'rising'. The kind of edge for which the period
-            is calculated. If kind='rising', the function will look for a rising
-            edge crossing before the peak. If kind='falling', the crossing will
-            happen after the peak.
-        threshold : float, optional
-            Value of the threshold at which the crossing is calculated. 
-            Additionally, if a peak value falls under the threshold, that peak
-            is ignored. The default is 5, which assumes the data has been 
-            detrended.
-        peak_min_distance : float, optional
-            The minimum distance between peaks, in units of average distance
-            between peaks. After one peak is used, any subsequent peaks closer
-            than this value will be ignored. The default is 0.5.
-
-        Returns
-        -------
-        period_times, periods : tuple
-            Tuple containg two arrays: time at which the period is calculated (at
-            which the crossing happens) and value of the interval between two 
-            consecutive crossings.
-        
-        """
-        data = self._df
-        crossings = self.get_crossings(inx, edge, threshold, peak_min_distance)
-        
-        crossing_times = data.times.values[crossings]
-        period_times = crossing_times[:-1] + np.diff(crossing_times ) / 2
-        periods = np.diff(crossing_times)
-        
-        return period_times, periods 
-
-   
     def downsample(self, downsampling_rate=10):
         """
         Downsamples the data by skipping datapoints. Returns a new dataframe.
@@ -391,7 +229,6 @@ class Processors:
         
         # make sure to keep metadata and processing steps info
         add_run_info(downsampled, self._df.metadata.file)
-        downsampled.metadata.rec_datetime = self._df.metadata.rec_datetime
         for attr in self._all_info_attributes:
             setattr(downsampled.process, attr, getattr(self, attr))
         
@@ -626,28 +463,14 @@ class Processors:
         
         action_name = 'gfilt'
         
-        # set the abf object to load data with filters
         pyabf.filter.gaussian(abf, sigma, channel=0)
+        pyabf.filter.gaussian(abf, sigma, channel=1)
+        
         abf.setSweep(sweepNumber=0, channel=0)        
         ch1_filt = abf.sweepY
 
-        # if there's only one channel, no need to set the second one (we can't)
-        if abf.channelCount > 1:
-            pyabf.filter.gaussian(abf, sigma, channel=1)
-            abf.setSweep(sweepNumber=0, channel=1)
-            ch2_filt = abf.sweepY
-        else:
-            # cut data, if needed
-            interval = self._df.metadata.interval
-            if interval is not None and interval != 'todo':
-                start_min, end_min = map(float, interval.split('-'))
-                start = int(start_min * 60 * abf.sampleRate)
-                end = int(end_min * 60 * abf.sampleRate)
-
-                ch1_filt = ch1_filt[start:end]
-                
-            ch2_filt = ch1_filt.copy()
-            
+        abf.setSweep(sweepNumber=0, channel=1)
+        ch2_filt = abf.sweepY
         
         self._save_processed_data(ch1_filt, ch2_filt, keep_og, channels, action_name)
         self._add_process_entry(action_name, sigma=sigma, keep_og=keep_og, channels=channels)
@@ -695,17 +518,15 @@ class Processors:
     
     def lowpass_filter(self, filter_order=2, frequency_cutoff=10, keep_og=False, channels=''):
         """
-        Filter the data in channels using a lowpass butterworth filter. The order
-        and frequency cutoff value can be set. It uses a forwards and a 
-        backwards pass of the filter, resulting in an effective filter order
-        that is twice filter_order.
+        Filter the data in challes using a lowpass butterworth filter. The order
+        and frequency cutoff value can be set.
 
         Parameters
         ----------
         filter_order : int, optional
             Order of the filter. The default is 2.
         frequency_cutoff : float, optional
-            Frequency at which the filter drops by 3dB. The default is 10Hz.
+            Frequency at which the filter drops by 10? dB. The default is 10.
         keep_og : Bool, optional
             Whether to keep the original column or overwride it. The default is
             False.
@@ -728,88 +549,12 @@ class Processors:
                 
         sampling_rate = data.metadata.sampling_rate
         sos = signal.butter(filter_order, frequency_cutoff, btype='lowpass', output='sos', fs=sampling_rate)
-        ch1_filt = signal.sosfiltfilt(sos, ch1[~nan_locs])
-        ch2_filt = signal.sosfiltfilt(sos, ch2[~nan_locs])
+        ch1_filt = signal.sosfilt(sos, ch1[~nan_locs])
+        ch2_filt = signal.sosfilt(sos, ch2[~nan_locs])
         
         self._save_processed_data(ch1_filt, ch2_filt, keep_og, channels, action_name)
-        self._add_process_entry(action_name, filter_order=filter_order, frequency_cutoff=frequency_cutoff, keep_og=keep_og, channels=channels)  
+        self._add_process_entry(action_name, filter_order=filter_order, frequency_cutoff=filter_order, keep_og=keep_og, channels=channels)  
         
-    
-    def highpass_filter(self, filter_order=2, frequency_cutoff=0.1, keep_og=False, channels=''):
-        """
-        Filter the data in channels using a highpass butterworth filter. The 
-        order and frequency cutoff value can be set. It uses a forwards and a 
-        backwards pass of the filter, resulting in an effective filter order
-        that is twice filter_order.
-
-        Parameters
-        ----------
-        filter_order : int, optional
-            Order of the filter. The default is 2.
-        frequency_cutoff : float, optional
-            Frequency at which the filter drops by 3 dB. The default is 0.1Hz.
-        keep_og : Bool, optional
-            Whether to keep the original column or overwride it. The default is
-            False.
-        channels : str, optional
-            A string describing what channel to apply the funciton on. The 
-            default is ''.
-
-        Returns
-        -------
-        None.
-
-        """
-        
-        action_name = 'hpfilt'
-        data = self._df
-        ch1, ch2 = self._get_channels(channels)
-        
-        # some filter methods leave behind nans in the data, that raises a LinAlgError
-        nan_locs = np.isnan(ch1)
-                
-        sampling_rate = data.metadata.sampling_rate
-        sos = signal.butter(filter_order, frequency_cutoff, btype='highpass', output='sos', fs=sampling_rate)
-        ch1_filt = signal.sosfiltfilt(sos, ch1[~nan_locs])
-        ch2_filt = signal.sosfiltfilt(sos, ch2[~nan_locs])
-        
-        self._save_processed_data(ch1_filt, ch2_filt, keep_og, channels, action_name)
-        self._add_process_entry(action_name, filter_order=filter_order, frequency_cutoff=frequency_cutoff, keep_og=keep_og, channels=channels)  
-        
-    
-    def cross_correlation(self, channels=''):
-        """
-        Calculate the corss-correlation of the data in channel 1 against that 
-        in channel 2. Use the processed data as defined by "channels". Return 
-        both the lags in units of the time vector in the data and the cross
-        correlation.
-
-        Parameters
-        ----------
-        channels : str, optional
-            A string describing what channel to apply the funciton on. The 
-            default is ''.
-
-        Returns
-        -------
-        lags : array
-            Lag values at which the correlation was calculated, in units of the
-            time vector in the data.
-        corr : array
-            Normalized cross-correlation of the data.
-
-        """
-        
-        ch1, ch2 = self._get_channels(channels)
-        sampling_rate = self._df.metadata.sampling_rate
-        
-        corr = signal.correlate(ch1, ch2)
-        corr /= np.max(corr)
-
-        lags = signal.correlation_lags(ch1.shape[0], ch2.shape[0]) / sampling_rate
-    
-        return lags, corr
-
 
     def calc_magnitudes_and_phases(self, channels=''):
         """
@@ -881,31 +626,6 @@ class Processors:
         
         self._add_process_entry('phase_diff', channels=channels)
   
-    
-    def calc_corr_lag(self, channels=''):
-        """
-        Calculate the lag using the corosscorrelation of the channels. The lag
-        is computed as the point at which the maximum of the correlation 
-        happens. Lag is always of channel 1 with respect to channel 2.
-
-        Parameters
-        ----------
-        channels : str, optional
-            A string describing what channel to apply the funciton on. The 
-            default is ''.
-
-        Returns
-        -------
-        lag : float
-            Lag of channel 1 with respect to channel 2 in units of the time
-            vector used.
-
-        """
-        
-        lags, corr = self.cross_correlation(channels)
-        
-        return lags[np.argmax(corr)]
-        
     
     def find_peaks(self, prominence=5, period_percent=0.6, channels=''):
         """
@@ -1120,7 +840,7 @@ class Processors:
             raise TypeError('channels must be a string')
         
         channel_options = set(re.sub(r'ch\d_?', '', x) for x in self._df.columns if x != 'times')
-        channels = channels.strip('_') # strip leading '_' in case there were any
+        channels = channels.strip('_') # strip leasing '_' in case there were any
         if channels not in channel_options:
             print(f'{channels} is not an available channel. Choose one of {channel_options}. Returning default raw channels.')
             channels = ''
@@ -1190,34 +910,18 @@ class Processors:
         #check if the action found was done on the correct channel
         steps = self.get_step_info(action, last=False)
         if all(channels!=step['channels'] for step in steps):
-            return False # I know I can just return the result of the all call, but this is more explicit
+            return False
         else:
             return True
 
 #%% Aux functions
-
-def load_any_data(file, *args, **kwargs):
-    """ A thin wrapper to handle both single channel and dual channel files"""
-
-    abf = pyabf.ABF(file)
-    if abf.channelCount == 1:
-        print('single channel data')
-        return load_single_channel(file, *args, **kwargs)
-    elif abf.channelCount == 2:
-        print('dual channel data')
-        if 'interval' in kwargs:
-            # remove the interval argument if for some reason we passed it
-            del kwargs['interval']
-        return load_data(file, *args, **kwargs)
-    else:
-        raise NotImplementedError(f"Can't handle files with {abf.channelCount} channels")
 
 def load_data(file, gauss_filter=True, override_raw=True):
     """
     Loads the ABF file, extracts the data from channels 1 and 2 in the sweep
     0 (only sweep in these files) and the times array. The times array will 
     always start at t=0. Pack everything into a pandas.DataFrame.
-    The dataFrame used has two custom accessors that store metadata for the run
+    The ddataFrame used has two custo accessors that store metadata for the run
     and a bunch of processing functions. data.processing.info will store the
     processing steps done to the data.
 
@@ -1252,77 +956,9 @@ def load_data(file, gauss_filter=True, override_raw=True):
     data = pd.DataFrame(data={'times':times, 'ch1':ch1, 'ch2':ch2})
     
     add_run_info(data, file)
-    data.metadata.rec_datetime = abf.abfDateTime
     
     if gauss_filter:
         data.process.abf_gauss_filt(abf, sigma=20, keep_og = not override_raw)
-    return data
-
-def load_single_channel(file, interval=None, gauss_filter=True, override_raw=True):
-    """
-    NOTE: This function is a kind of wrapper to load single channel files using
-    the two channel processors. It copies the only channel onto both channels 
-    of the object, so the processors will be highly inefficient until they are
-    rewritten.
-    
-    Loads the ABF file, extracts the data from channel 1 in the sweep 0 (only 
-    sweep in these files) and the times array. The times array will always 
-    start at t=0. Pack everything into a pandas.DataFrame.
-    The dataFrame used has two custom accessors that store metadata for the run
-    and a bunch of processing functions. data.processing.info will store the
-    processing steps done to the data.
-
-    Parameters
-    ----------
-    file : str or Path-like
-        Path to the data.
-    interval : 'str'
-        A string indicating what part of the recording to use. It should be 
-        either "todo", or two numbers separated by a dash. For example '1-4.5'
-        indicates that the data should only be used between minute 1 and minute
-        4.5. Setting it to None will use thre whole dataseries. Default is None.
-    gauss_filter : Bool, optional
-        Whether to apply a gaussian filter. The default is True.
-    override_raw : Bool, optional
-        Whether to have the gaussia-filtered data override the original data. 
-        This only has effect when gauss_filter=True. The default is True.
-
-    Returns
-    -------
-    data : pandas.DataFrame
-        The loaded data, optionally pre-processed with a gaussian filter.
-
-    """
-    
-    # Load data
-    abf = pyabf.ABF(file)
-    # Set sweep and channel, extract tmes and data
-    abf.setSweep(sweepNumber=0, channel=0)
-    times = abf.sweepX
-    ch1 = abf.sweepY
-    
-    # Cut data at required points
-    if interval is not None and interval != 'todo':
-        start_min, end_min = map(float, interval.split('-'))
-        start = int(start_min * 60 * abf.sampleRate)
-        end = int(end_min * 60 * abf.sampleRate)
-
-        times = times[start:end]        
-        ch1 = ch1[start:end]
-    
-    # Pack everything into a DataFrame
-    # repeat ch1 data into ch2
-    times -= times[0]    
-    data = pd.DataFrame(data={'times':times, 'ch1':ch1, 'ch2':ch1})
-    
-    add_run_info(data, file)
-    data.metadata.interval = interval
-    data.metadata.rec_datetime = abf.abfDateTime
-    
-    # filter data if needed
-    if gauss_filter:
-        data.process.abf_gauss_filt(abf, sigma=20, keep_og = not override_raw)
-    
     return data
 
 def add_run_info(data, file):
@@ -1334,7 +970,6 @@ def add_run_info(data, file):
     
     pair_guide_file = file.parent / 'par_guide.xlsx'
     pair_guide = pd.read_excel(pair_guide_file)
-    pair_guide['name'] = pair_guide.name.astype(str)
     run_info = next(pair_guide[pair_guide.name == file.stem].itertuples())
     
     # convert run info into a dict; skip first element, because it's the index
@@ -1345,193 +980,3 @@ def add_run_info(data, file):
     
     data.metadata.sampling_rate = data.metadata.raw_sampling_rate
         
-    
-def hodges_lehmann_distance_estimator(group1, group2):
-    """ Calculate the Hodges-Lehmann estimator, which represents an unbiased
-    non parametric estimator for a distributions location parameter, which in
-    symmetric distributions represents the median. In this case, we calculate 
-    the median distance between the two empirical distributions by finding the
-    median difference bwetween all pairs of the two gropus of data.
-    If CI is True, then also calculate the bootsrapped confidence interval for
-    the median difference.
-    """
-    
-    differences = [x1-x2 for x1, x2 in itertools.product(group1, group2)]
-    return np.median(differences)
-
-def hodges_lehmann_distance_confidence_interval(group1, group2, bootstrap_samples=1000):
-    """ Calculate the confidence bootstrapped interval for the Hodges-Lehmann 
-    distance estimator. 
-    """
-    
-    bs_result = stats.bootstrap([group1, group2], hodges_lehmann_distance_estimator, 
-                                method='basic',
-                                n_resamples=bootstrap_samples, 
-                                vectorized=False)
-    
-    # plt.hist(bs_result.bootstrap_distribution, bins='auto')
-        
-    CI = bs_result.confidence_interval
-    
-    return CI
-    
- 
-def find_valid_periods(period_times, period_values, threshold=1.8, passes=1):
-    """
-    Find indexes for points with "valid" periods. Valid here means points where
-    we assume a period was skipped either by the algorithm or the cell. On 
-    first pass it calculates the mode of the periods and considers valid only 
-    periods within 1.8 times the mode. On the second one, it does a linear fitting for the periods
-
-    Parameters
-    ----------
-    period_times, period_values : array-like
-        (time, value) pairs for the periods to process.
-    threshold : float, ptional
-        Any period that is threshold times away from the mode of the periods 
-        will be regarded as invalid. Default is 1.8.
-    passes : int, optional
-        How many passes to do. First apss is only calculating the mode. Second 
-        pass does a linear regression and calculates deviations form there. 
-        Subsequent passes repeat these two steps. Default is 1.
-
-    Returns
-    -------
-    valid_indexes : array
-        Indexes of the valid periods.
-
-    """
-    
-    assert isinstance(passes, int) and passes > 0
-    
-    period_mode = calc_mode(period_values)
-    valid_indexes = period_values <= period_mode * threshold
-    
-    # stop here if we only check mode
-    if passes == 1:
-        return valid_indexes
-    
-    trend = np.polynomial.Polynomial.fit(period_times[valid_indexes], period_values[valid_indexes], deg=1)
-    detrended_periods = period_values - trend(period_times) + trend(0)
-    
-    period_mode = calc_mode(detrended_periods)
-    valid_indexes = detrended_periods <= period_mode * threshold
-    
-    if passes == 2:
-        return valid_indexes
-    
-    return find_valid_periods(period_times, period_values, threshold, passes=passes-2)
-
-
-def linear_fit_error(x, yerr):
-    """
-    Returns a function that estimates the uncertainty in values estimated by 
-    evaluating the a linear fit done over data given by pairs (x, y), where y
-    is estimated to have a standard error yerr.
-
-    Parameters
-    ----------
-    x : array-like
-        Independent variable over which the observations were done.
-    yerr : floar
-        estiamted standard error for the observations.
-    
-    Returns
-    -------
-    callable
-        Estimation of the uncertainty of the linear fit.
-    """
-    x = np.asarray(x)
-    N = len(x)
-    
-    return lambda x_eval: np.sqrt( yerr**2/N * (1 + ((x_eval - x.mean())/x.std())**2 ) )
-
-
-    
-#%% Analysis functions (repeated in Processors)
-
-
-def polydetrend(times, data, degree=5):
-    """ Polynomic detrend"""
-    
-    P = np.polynomial.Polynomial
-    
-    # some filter methods leave behind nans in the data, that raises a LinAlgError
-    nan_locs = np.isnan(data)
-    
-    # fit the data
-    trend_poly = P.fit(times[~nan_locs], data[~nan_locs], degree)
-    
-    # remove the trend from the data, this reintroduces the nans
-    detrended = data - trend_poly(times)
-    
-    # save processed data
-    return detrended, trend_poly
-    
-def abf_gauss_filt(abf, sigma=20, sweep=None):
-    """Gaussian filter built into the abf object"""
-    
-    pyabf.filter.gaussian(abf, sigma, channel=0)
-    
-    if sweep is None:
-        data = []
-        for sweep in abf.sweepList:
-            abf.setSweep(sweepNumber=sweep, channel=0)        
-            filtered_data = abf.sweepY
-            data.append(filtered_data)
-        
-        return data
-    else:
-        abf.setSweep(sweepNumber=sweep, channel=0)        
-        filtered_data = abf.sweepY
-        
-        return filtered_data    
-    
-
-def gauss_filt(times, data, sigma_ms=100):
-    """Gaussian filter "from scratch" (using scipy filters)"""
-    
-    # some filter methods leave behind nans in the data, that raises a LinAlgError
-    nan_locs = np.isnan(data)
-    
-    # calculate the sigma in untis of datapoints
-    sampling_rate = 1/(times[1]-times[0])
-    sigma_points = (sigma_ms / 1000) * sampling_rate
-    
-    filtered = gaussian_filter1d(data[~nan_locs], sigma_points)
-    
-    nan_locs = np.isnan(data)
-
-    # if np.sum(~nan_locs) != data.size:
-    #     raise ValueError("The size of the input data couldn't be matched to the non nan values in the original data")
-
-    ch1_nans = np.full(data.shape, np.nan)
-    ch1_nans[~nan_locs] = filtered
-    filtered = ch1_nans
-    
-    return filtered
-
-
-def my_find_peaks(times, data, period_percent=0.4, prominence=3):
-    """ Find peaks with a  bunch of extra arguments and double passes"""
-    
-    ## first pass, with threshold 0mv
-    p_inx, _ = signal.find_peaks(data, height=0)
-    
-    ## second pass, with threshold given by otsu
-    # threshold = Processors.get_threshold(peaks)
-    # p_inx, _ = signal.find_peaks(ch, height=threshold)
-    # peaks = ch.values[p_inx]
-    t_peaks = times[p_inx]
-
-    ## third pass, with minimum distance between peaks
-    counts, bins = np.histogram(np.diff(t_peaks))
-    bin_centers = bins[:-1] + np.diff(bins) / 2
-    period_mode = bin_centers[ np.argmax(counts) ]
-    distance_points = int(period_mode * period_percent / (times[1] - times[0]))
-    # p_inx, _ = signal.find_peaks(ch, height=threshold, distance=distance_points)
-    p_inx, _ = signal.find_peaks(data, distance=distance_points, prominence=prominence)
-    
-    return p_inx
-
-   

@@ -8,6 +8,7 @@ import numpy as np
 #matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib.collections import LineCollection
+from scipy import stats
 # from matplotlib.colors import ListedColormap, BoundaryNorm
 
 from PIL import Image as pil_image
@@ -524,9 +525,9 @@ class contenidos(list):
         return self._sort_type
     @sort_type.setter
     def sort_type(self, value):
-        valid = ['natural', 'numeric', 'lexicographic', 'age', 'modified', None]
+        valid = ['natural', 'numeric', 'lexicographic', 'age', 'modified', 'size', None]
         if value not in valid:
-            raise ValueError("Sort must be one of 'natural', 'numeric', 'lexicographic', 'age', 'modified' or None.")
+            raise ValueError(f"Sort must be one of {valid[:-1]} or None.")
         self._sort_type = value
         self.__sorter()
 
@@ -542,6 +543,8 @@ class contenidos(list):
             self.age_sort()
         elif sort=='modified':
             self.last_modified_sort()
+        elif sort=='size':
+            self.size_sort()
         else:
             pass
 
@@ -577,7 +580,7 @@ class contenidos(list):
         to sort. It's especially useful when the filenames of all the files follow
         the same parttern, except for a number. Natsort will give the same result,
         unless the numbers include floats."""
-        self.sort(key=lambda key: find_numbers(str(key.name)))
+        self.sort(key=lambda file: find_numbers(str(file.name)))
     
     def age_sort(self):
         self.sort(key=os.path.getmtime)
@@ -585,24 +588,68 @@ class contenidos(list):
     def last_modified_sort(self):
         self.sort(key=os.path.getctime)
         
+    def size_sort(self):
+        self.sort(key=self.get_size_of , reverse=True)
+    
     def print_orden(self, filter_pattern=None, only_basename=True):
 
+        # how many digits does the length of the lsit have?
+        pad = len(str(len(self)-1))
+        
         if only_basename:
             for i, f in enumerate(self):
                 if filter_pattern is None or re.search(filter_pattern, f.name):
-                    print(f'{i}: {f.name}')
+                    cprint(f'&ly {i:<{pad}}&s : {f.name}')
         else:
             for i, f in enumerate(self):
                 if filter_pattern is None or re.search(filter_pattern, f):
-                    print(f'{i}: {f}')
+                    cprint(f'&ly {i:<{pad}}&s : {f}')
+                    
+    def print_sizes(self, maxdepth=1):
+        """ Print the contents along with the sizes"""
+        
+        pad = len(str(len(self)-1))
+        
+        filesizes = self.get_sizes() # in kB
+        units = 'kB', 'MB', 'GB', 'TB'
+        
+        for i, (f, size) in enzip(self, filesizes):
+            unit_inx = 0
+            while size > 1000:
+                size /= 1000
+                unit_inx +=1
+            
+            size = smart_number_format(size, 3)
+            cprint(f'&ly {i:<{pad}}&s : &lc {size:>4} {units[unit_inx]}&s  {f.name}')
+    
+    def get_sizes(self, maxdepth=1):
+        """ Return a list containing the sizes of the elements in kB. For 
+        directories, recursively compute the size of its contents up to
+        maxdepth."""
+        
+        sizes = [self.get_size_of(f, maxdepth) / 1000 for f in self]
+        return sizes
+    
+    @staticmethod
+    def get_size_of(elem, maxdepth=3):
+        """ Recursively get the size of an element up to maxdepth """
+        
+        # spetial case
+        if maxdepth == 0 or not elem.is_dir():
+            return elem.stat().st_size
+        
+        else:
+            return sum(contenidos.get_size_of(sub_elem, maxdepth-1) for sub_elem in elem.iterdir())
 
     def filtered_ext(self, extension):
         '''Crea una nueva lista de las cosas con la extensión correspondiente.'''
-        return [elem for elem in self if elem.suffix == extension]
+        # return [elem for elem in self if elem.suffix == extension]
+        return self.__class__(self.carpeta, self.full_path, self.sort_type, extension, self.filter_re)
 
     def filtered_re(self, pattern):
         '''Crea una nueva lista de las cosas que matcheen el patrón.'''
-        return [elem for elem in self if re.match(pattern, elem.name)]
+        # return [elem for elem in self if re.match(pattern, elem.name)]
+        return self.__class__(self.carpeta, self.full_path, self.sort_type, self.filter_ext, pattern)
 
     # def filter_ext(self, extension):
     #     '''Elimina de la lista todo lo que no tenga la extensión correspondiente'''
@@ -686,6 +733,205 @@ class Testimado:
     
     def print_remaining(self, i, *a, **kw):
         print('ETA: {}'.format(self.time_str(i, *a, **kw)))
+
+
+
+def not_instantaible(the_class):
+    """ A class decorator to make a class not instantiable"""    
+    def __new__(cls, *a, **kw):
+        raise TypeError(cls.__name__ + " can't be directly instantiated")
+    
+    the_class.__new__ = __new__
+    
+    return the_class
+
+@not_instantaible
+class COLORS:
+        
+    STOP = '\33[00m'
+    
+    @not_instantaible    
+    class FG:
+        BLACK =     '\033[30m'
+        RED =       '\033[31m'
+        GREEN =     '\033[32m'
+        YELLOW =    '\033[33m'
+        BLUE =      '\033[34m'
+        PURPLE =    '\033[35m'
+        CYAN =      '\033[36m'
+        GRAY =      '\033[37m'
+        
+        DARKGRAY =   '\033[90m'
+        LIGHTRED =   '\033[91m'
+        LIGHTGREEN = '\033[92m'
+        LIGHTYELLOW ='\033[93m'
+        LIGHTBLUE =  '\033[94m'
+        LIGHTPURPLE ='\033[95m'
+        LIGHTCYAN =  '\033[96m'
+        WHITE =      '\033[97m'
+        
+    @not_instantaible        
+    class BG:
+        BLACK =     '\033[40m'
+        RED =       '\033[41m'
+        GREEN =     '\033[42m'
+        ORANGE =    '\033[43m'
+        BLUE =      '\033[44m'
+        PURPLE =    '\033[45m'
+        CYAN =      '\033[46m'
+        GRAY =      '\033[47m'
+        
+        DARKGRAY =   '\033[100m'
+        LIGHTRED =   '\033[101m'
+        LIGHTGREEN = '\033[102m'
+        LIGHTYELLOW ='\033[103m'
+        LIGHTBLUE =  '\033[104m'
+        PINK =       '\033[105m'
+        LIGHTCYAN =  '\033[106m'
+        WHITE =      '\033[107m'
+        
+    @not_instantaible
+    class STYLE:
+        BOLD =      '\033[01m'
+        FAINT =     '\033[02m'
+        ITALIC =    '\033[03m'
+        UNDERLINE = '\033[04m'
+        BLINK1 =    '\033[05m'
+        BLINK2 =    '\033[06m'
+        INVERT =    '\033[07m'
+        STRIKET =   '\033[09m'
+        
+    @staticmethod
+    def fg(code):
+        if code not in range(16, 256):
+            raise ValueError('Code is out of bounds [16, 255]')
+        return f'\033[38;5;{code}m'
+        
+    @staticmethod
+    def bg(code):
+        if code not in range(16, 256):
+            raise ValueError('Code is out of bounds [16, 255]')
+        return f'\033[48;5;{code}m'
+    
+    @classmethod
+    def test(cls, what=None):
+        """Test the available formats in the current environment. What cna be 
+        one of BG, FG or STYLE, or None."""
+        
+        # if what is None, print all codes
+        if what is None:
+            # print codes
+            for i in range(120):
+                end = ' ' if (i+1)%6 else '\n'
+                print(f'\33[{i}m' + '{0:>10}'.format(f'\\33[{i}m') + '\33[0m', end=end)
+            
+            # print indexed colors
+            for m in range(0, 3):
+                print('\33[37m') if m==0 else print('\33[30m')
+                for i in range(16, 232, 36):
+                    for j in range(12):
+                        if j==6:
+                            print('\t', end='')
+                        n = i+j+m*12
+                        print(f'\33[48;5;{n}m{n:^5}', end='')
+                    print(COLORS.STOP)
+            
+            # print grayscale indexed colors
+            print('\33[37m') # white
+            for i in range(232, 256):
+                if i==244:
+                    print('\33[30m')
+                print(f'\33[48;5;{i}m{i:^5}', end='\t' if i in (237, 249) else '')
+            print(COLORS.STOP)
+            
+            return
+        
+        # if it's the string 'LIGHT', print foreground and background colros preceded by bold
+        if what.upper() == 'LIGHT':
+            for what in (cls.FG, cls.BG):
+                for k, v in what.__dict__.items():
+                    if '__' not in k and 'LIGHT' not in k:
+                        print(v, f'{k:>9}', '-->' , cls.STYLE.BOLD, 'LIGHT', k, cls.STOP)
+            return
+        
+        # else, if it's a string, convert it to the class
+        if what in ('BG', 'FG', 'STYLE'):
+            what = getattr(cls, what)
+        
+        # if what is a valid class, print its contents, else, raise
+        if any(what==c for c in (cls.FG, cls.BG, cls.STYLE)):
+            for k, v in what.__dict__.items():
+                if '__' not in k:
+                    print(v, k,  cls.STOP)
+        else:
+            raise ValueError('what has to be one of BG, FG, STYLE or None')
+        
+# Create the aliases inside colors
+for k, v in COLORS.FG.__dict__.items():
+    if '__' not in k:
+        setattr(COLORS, k, v)
+
+def cprint(*msg, clearformat=True, **kwargs):
+    """ Print with colors encoded into the print strings. if clearformat=True,
+    then the format will be cleared at the end of the printed string.
+    
+    The elements of msg will be scanned for a pattern matching '&. ' where '&'
+    indicates the start of the pattern, a whitespace indicates the end of the 
+    pattern and the dot in the middle represents the code.
+    The code has to be either one of the letters representing colors set in the
+    variable dictionary below, or a color preceded by the letter b, to apply the
+    color as a background.
+    For example: 'The next word is in &c cyan, now with &gb green background'.
+    Use '&& ' to print a literal '&'.
+    
+    """
+    
+    dictionary = {
+        'k':'BLACK',
+        'r':'RED',
+        'g':'GREEN',
+        'y':'YELLOW',
+        'b':'BLUE',
+        'p':'PURPLE',
+        'c':'CYAN',
+        'a':'GRAY',
+        
+        's':'STOP',
+        
+        'i':'ITALIC',
+        'l':'BOLD', # use this to get lighter colors in some terminals
+        'u':'UNDERLINE',
+                  }
+    pattern = '&.+? '
+
+    def sub(match):
+        styles= 'ilu'
+        
+        og_str = match.group(0)
+        code = og_str[1:-1]
+        
+        if code == '&':
+            return '&'
+        
+        if len(code)==1:
+            if code in dictionary:
+                if code in styles:
+                    return getattr(COLORS.STYLE, dictionary[code])
+                else:
+                    return getattr(COLORS, dictionary[code])
+        elif len(code)==2:
+            if code[0] == 'b' and code[1] in dictionary:
+                return getattr(COLORS.BG, dictionary[code[1]])
+            elif all(c in dictionary for c in code):
+                return ''.join(
+                    getattr(COLORS.STYLE if c in styles else COLORS , dictionary[c]) for c in code
+                    )
+        
+        return og_str
+
+    msg = [re.sub(pattern, sub, str(s)) for s in msg]
+    print(*msg, COLORS.STOP, **kwargs)
+
 
 class Grid:
     '''Una clase para crear y llenar una grilla con imagenes. A menos que 
@@ -944,7 +1190,7 @@ def smooth(x, size, window=np.hamming):
     size : int
         The size of the window.
     window : callable, optional
-        A window type to use. Default is numpy.hamming, btu any callable can 
+        A window type to use. Default is numpy.hamming, but any callable can 
         be passed. The default is np.hamming.
 
     Returns
@@ -963,6 +1209,68 @@ def smooth(x, size, window=np.hamming):
     
     return y[lower:-upper]
 
+def calc_mode(x, use='kde', bins=None, center=True):
+    """
+    Estimates the mode of the data given in x. To do so, it uses a kernel 
+    density approximation (if use='kde') or creates an histogram (if use='hist')
+    of the data and finds the bin with the highest count. The mode is then the 
+    value of the bin that realizes the maximum.
+    
+    This function is useful when the data in question is continuos and you can
+    only approximate the subjacent probability density.
+
+    Parameters
+    ----------
+    x : array-like
+        Data over which the mode shall be calculated.
+    use : 'kde' or 'hist'
+        Whether to use a kernel density estimator or a histogram (respetively) 
+        to estimate the mode. In the former case, bins and center are ignored.
+        The default is 'kde'.
+    bins : None, int, str or array-like, optional
+        The bins argument passed to np.histogram. If bins=None, it uses whatever
+        the default of that function, otherwise, the value gets passed to that
+        function. The default is None.
+    center : Bool, optional
+        If center=True, it calculates the center of the bin that realzies the
+        maximum. Otherwise, it uses the lower bound of the bin. The default is 
+        True.
+
+    Returns
+    -------
+    mode : number
+
+    """
+    
+    if use=='kde':
+        # following https://rmflight.github.io/post/finding-modes-using-kernel-density-estimates/
+        
+        # estimate the kernel density
+        kernel = stats.gaussian_kde(x)
+        # use the calculated density and evaluate it the pdf in the given values
+        # here we could evaluate the pdf in np.linspace(x.min, x.max, 1000), instead
+        # this approach gives us a value of x as mode, rather than just the maximum of the estimated pdf
+        height = kernel.pdf(x)
+        # find the maximal value of the mdf, which approximates the mode
+        mode = x[np.argmax(height)]
+    
+    elif use=='hist':
+    
+        if bins is None:
+            counts, bin_edges = np.histogram(x)
+        else:
+            counts, bin_edges = np.histogram(x, bins=bins)
+        
+        max_inx = np.argmax(counts)
+        
+        mode = bin_edges[max_inx]
+        if center:
+            mode += (bin_edges[max_inx + 1] - bin_edges[max_inx + 1]) / 2
+        
+    else:
+        raise ValueError(f"'use' was to be one of 'kde' or 'hist', not {use}.")
+    
+    return mode
 
 
 '''

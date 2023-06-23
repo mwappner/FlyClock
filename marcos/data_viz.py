@@ -11,18 +11,54 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
-from scipy import interpolate
+from scipy import interpolate, stats
 
-
-from utils import contenidos, enzip, find_point_by_value
+from utils import contenidos, enzip, find_point_by_value, find_closest_value
 import analysis_utils as au
-    
+
+#%% Visualzie raw data
+
+import pyabf
+
+# Load data
+data_dir = '/media/marcos/DATA/marcos/FloClock_data/data'
+# data_dir = '/media/marcos/DATA//marcos/FloClock_data/data - mecamilamina'
+file_inx = 44
+
+data_files = contenidos(data_dir, filter_ext='.abf')
+
+file = data_files[file_inx]
+abf = pyabf.ABF(file)
+
+abf.setSweep(0, channel=0)
+times = abf.sweepX
+ch1 = abf.sweepY
+
+abf.setSweep(0, channel=1)
+ch2 = abf.sweepY
+
+fig, (top, bot) = plt.subplots(2,2, figsize=[17, 6], sharex='col', width_ratios=[3,1], sharey=True)
+ax1, ax3 = top
+ax2, ax4 = bot
+
+ax1.plot(times, ch1)
+ax2.plot(times, ch2)
+
+plt_slice = slice(120000,170000)
+ax3.plot(times[plt_slice], ch1[plt_slice])
+ax4.plot(times[plt_slice], ch2[plt_slice])
+
+fig.suptitle(file.name)
+
+print('duration:', f'{times[-1]/60:.3f}')
+print('sampling rate:', abf.sampleRate)
+
 #%% Visualize one run
 
 # Load data
-# data_dir = '/data/marcos/FloClock_data/data'
-data_dir = '/data/marcos/FloClock_data/data - mecamilamina'
-file_inx = 9
+data_dir = '/media/marcos/DATA/marcos/FloClock_data/data'
+# data_dir = '/media/marcos/DATA//marcos/FloClock_data/data - mecamilamina'
+file_inx = 29
 
 data_files = contenidos(data_dir, filter_ext='.abf')
 pair_guide_file = contenidos(data_dir, filter_ext='.xlsx').pop()
@@ -31,8 +67,25 @@ pair_guide_file = contenidos(data_dir, filter_ext='.xlsx').pop()
 data = au.load_data(data_files[file_inx], gauss_filter=True, override_raw=False)
 data.process.lowpass_filter(filter_order=2, frequency_cutoff=10, keep_og=True)
 data = data.process.downsample()
-data.process.poly_detrend(degree=5, keep_og=True, channels='gfilt')
-data.process.gaussian_filter(sigma_ms=100, keep_og=True, channels='gfilt')
+data.process.highpass_filter(filter_order=2, frequency_cutoff=0.1, keep_og=True, channels='lpfilt')
+# data.process.poly_detrend(degree=5, keep_og=True, channels='gfilt')
+# data.process.gaussian_filter(sigma_ms=100, keep_og=True, channels='lpfilt') #apply it on the non-detrended data because we will detrned manually later when plotting
+data.process.lowpass_filter(filter_order=2, frequency_cutoff=2, keep_og=True, channels='lpfilt') #apply it on the non-detrended data because we will detrned manually later when plotting
+
+   
+# fig, (ax1, ax2) = plt.subplots(2, 1, sharex=True)
+# # plot detrended very smoothed data
+
+# ax1.plot(data.times, data.ch1_lpfilt - data.process.get_hptrend(1), '0.5', label='raw')
+# ax2.plot(data.times, data.ch2_lpfilt - data.process.get_hptrend(2), '0.5')
+
+# ax1.plot(data.times, data.ch1_lpfilt_gfilt2 - data.process.get_hptrend(1), label='gauss')
+# ax2.plot(data.times, data.ch2_lpfilt_gfilt2 - data.process.get_hptrend(2), )
+
+# ax1.plot(data.times, data.ch1_lpfilt_lpfilt - data.process.get_hptrend(1), label='lowpass')
+# ax2.plot(data.times, data.ch2_lpfilt_lpfilt - data.process.get_hptrend(2), )
+
+# ax1.legend()
 
 # Plot data
 
@@ -62,20 +115,21 @@ ax_dict['y'].plot(data.times, data.ch2_gfilt, 'C02')
 # ax_dict['b'].plot(data.times, data.ch2_gfilt_gfilt2, 'C04')
 
 # plot trends
-trend, = ax_dict['a'].plot(data.times, data.process.get_trend(1), label='trend')
-ax_dict['x'].plot(data.times, data.process.get_trend(1), 'C03')
-ax_dict['b'].plot(data.times, data.process.get_trend(2))
-ax_dict['y'].plot(data.times, data.process.get_trend(2), 'C03')
+# trend, = ax_dict['a'].plot(data.times, data.process.get_trend(1), label='trend')
+trend, = ax_dict['a'].plot(data.times, data.process.get_hptrend(1), label='trend')
+ax_dict['x'].plot(data.times, data.process.get_hptrend(1), 'C03')
+ax_dict['b'].plot(data.times, data.process.get_hptrend(2))
+ax_dict['y'].plot(data.times, data.process.get_hptrend(2), 'C03')
 
 # plot detrended data
-ax_dict['c'].plot(data.times, data.ch1_gfilt_pdetrend, label=f'ch1 ({data.metadata.ch1})')
-ax_dict['c'].plot(data.times, data.ch2_gfilt_pdetrend, label=f'ch2 ({data.metadata.ch2})')
-ax_dict['z'].plot(data.times, data.ch1_gfilt_pdetrend)
-ax_dict['z'].plot(data.times, data.ch2_gfilt_pdetrend, alpha=0.6)
+ax_dict['c'].plot(data.times, data.ch1_lpfilt_hpfilt, label=f'ch1 ({data.metadata.ch1})')
+ax_dict['c'].plot(data.times, data.ch2_lpfilt_hpfilt, label=f'ch2 ({data.metadata.ch2})')
+ax_dict['z'].plot(data.times, data.ch1_lpfilt_hpfilt)
+ax_dict['z'].plot(data.times, data.ch2_lpfilt_hpfilt, alpha=0.6)
 
 # plot detrended very smoothed data
-ax_dict['c'].plot(data.times, data.ch1_gfilt_gfilt2 - data.process.get_trend(1), '#89bce0')
-ax_dict['c'].plot(data.times, data.ch2_gfilt_gfilt2 - data.process.get_trend(2), '#fab67a')
+ax_dict['c'].plot(data.times, data.ch1_lpfilt_lpfilt - data.process.get_hptrend(1), '#89bce0')
+ax_dict['c'].plot(data.times, data.ch2_lpfilt_lpfilt - data.process.get_hptrend(2), '#fab67a')
 
 fig.legend(handles=[raw, low, gaus, trend], ncol=6, loc='upper center', bbox_to_anchor=(0.5, 0.97))
 ax_dict['c'].legend()
@@ -104,6 +158,65 @@ for ax in 'cz':
     ax_dict[ax].set_title('Both channels, detrended')
     ax_dict[ax].set_xlabel('Time [seconds]')
     
+#%% Step by step analysis
+
+
+# Load data
+data_dir = '/media/marcos/DATA/marcos/FloClock_data/data'
+# data_dir = '/media/marcos/DATA//marcos/FloClock_data/data - mecamilamina'
+file_inx = 29
+channel = 2 # 1 or 2
+
+# for the zoomed-in plot
+plot_seconds = 10 # duration
+t0 = 30 # where to start
+
+data_files = contenidos(data_dir, filter_ext='.abf')
+pair_guide_file = contenidos(data_dir, filter_ext='.xlsx').pop()
+
+fig = plt.figure(constrained_layout=True, figsize=[11, 7])
+# figs, axarr = plt.subplots(4,2, constrained_layout=True, sharex='col')
+figs = fig.subfigures(4)
+
+ch = f'ch{channel}'
+
+# Process data a bit
+data = au.load_data(data_files[file_inx], gauss_filter=False, override_raw=False)
+for ax in figs[0].subplots(1, 2):
+    ax.plot(data.times, data[ch])
+    ax.set_ylabel('mV')
+    
+ax.set_xlim(t0, t0+plot_seconds)
+figs[0].suptitle('Raw data')
+
+data.process.lowpass_filter(filter_order=2, frequency_cutoff=10)
+for ax in figs[1].subplots(1, 2):
+    ax.plot(data.times, data[ch])
+    ax.set_ylabel('mV')
+    
+ax.set_xlim(t0, t0+plot_seconds)
+figs[1].suptitle('Lowpass filter (botterworth filter with 10Hz cutoff frequency) [limpiamos spikes y un poco de ruido]')
+
+data = data.process.downsample()
+data.process.highpass_filter(filter_order=2, frequency_cutoff=0.1)
+for ax in figs[2].subplots(1, 2):
+    ax.plot(data.times, data[ch])
+    ax.set_ylabel('mV')
+    
+ax.set_xlim(t0, t0+plot_seconds)
+figs[2].suptitle('Highpass filter (botterworth filter with 0.1Hz cutoff frequency) [sacamos el trend global, enderezamos]')
+
+data.process.lowpass_filter(filter_order=2, frequency_cutoff=2)
+for ax in figs[3].subplots(1, 2, sharey=True):
+    ax.plot(data.times, data[ch])
+    ax.set_xlabel('time [sec]')
+    ax.set_ylabel('mV')
+    
+ax.set_xlim(t0, t0+plot_seconds)
+figs[3].suptitle('Lowpass filter (botterworth filter with 2Hz cutoff frequency) [alisamos las curvas par aalgunos de los análisis]')
+ 
+
+
 #%% Plot and save all runs
 
 # Load data
@@ -283,11 +396,11 @@ for i, file in enumerate(iter_over):
     
 #%% Analize trendlines
 
-data_dir = '/data/marcos/FloClock_data/data - mecamilamina'
+data_dir = '/media/marcos/DATA//marcos/FloClock_data/data - mecamilamina'
 poly_dir = Path(data_dir) / 'output' / 'polynomial_trends'
 
 data_files = contenidos(poly_dir, filter_ext='.pickle')
-pair_guide_file = contenidos(data_dir, filter_ext='.xlsx').pop()
+pair_guide_file = Path(data_dir) / 'par_guide.xlsx' 
 
 fig, ax = plt.subplots()
 
@@ -331,34 +444,88 @@ average = np.nanmean( [interp(average_times) for interp in interpolators], axis=
 
 ax.plot(average_times, average, 'k', lw=2)
 
+#%% Test polynomial detrending vs highpass filter
+
+# Load data
+data_dir = '/media/marcos/DATA/marcos/FloClock_data/data'
+# data_dir = '/media/marcos/DATA//marcos/FloClock_data/data - mecamilamina'
+file_inx = 2
+
+data_files = contenidos(data_dir, filter_ext='.abf')
+pair_guide_file = contenidos(data_dir, filter_ext='.xlsx').pop()
+
+# create figure
+fig, (top, mid, bot) = plt.subplots(3,2, sharex='col')
+
+ax01, ax02 = top
+ax1, ax2 = mid
+ax3, ax4 = bot
+
+# Process data a bit
+data = au.load_data(data_files[file_inx], gauss_filter=False)
+data.process.lowpass_filter(filter_order=2, frequency_cutoff=10, keep_og=True)
+
+ax01.plot(data.times, data.ch1, c='0.7')
+ax02.plot(data.times, data.ch2, c='0.7')
+ax01.plot(data.times, data.ch1_lpfilt, c='C0')
+ax02.plot(data.times, data.ch2_lpfilt, c='C1')
+
+data = data.process.downsample()
+data.process.poly_detrend(degree=5, keep_og=True, channels='lpfilt')
+data.process.highpass_filter(filter_order=2, frequency_cutoff=0.1, keep_og=True, channels='lpfilt')
+# data.process.gaussian_filter(sigma_ms=100, keep_og=True, channels='gfilt')
+
+
+ax1.plot(data.times, data.ch1_lpfilt_pdetrend)
+ax2.plot(data.times, data.ch2_lpfilt_pdetrend, c='C1')
+
+ax3.plot(data.times, data.ch1_lpfilt_hpfilt)
+ax4.plot(data.times, data.ch2_lpfilt_hpfilt, c='C1')
+
+# plot trends
+ax01.plot(data.times, data.process.get_hptrend(1), c='C3')
+ax02.plot(data.times, data.process.get_hptrend(2), c='C3')
+
+ax01.plot(data.times, data.process.get_trend(1), c='C4')
+ax02.plot(data.times, data.process.get_trend(2), c='C4')
+
+
+ax01.set_title('CH1')
+ax02.set_title('CH2')
+
+ax01.set_ylabel('raw')
+ax1.set_ylabel('polynomial detrend')
+ax3.set_ylabel('highpass')
 
 #%% Single Lissajous figures
 
 # Load data
-# data_dir = '/data/marcos/FloClock_data/data'
-data_dir = '/home/user/Documents/Doctorado/Fly clock/FlyClock_data/data/'
-file_inx = 0
+data_dir = '/media/marcos/DATA/marcos/FloClock_data/data'
+# data_dir = '/home/user/Documents/Doctorado/Fly clock/FlyClock_data/data/'
+file_inx = 4
 
 data_files = contenidos(data_dir, filter_ext='.abf')
 pair_guide_file = contenidos(data_dir, filter_ext='.xlsx').pop()
 
 # Process data a bit
-data = au.load_data(data_files[file_inx], gauss_filter=True, override_raw=False)
+data = au.load_data(data_files[file_inx], gauss_filter=False)
+data.process.lowpass_filter(filter_order=2, frequency_cutoff=10, keep_og=True)
 data = data.process.downsample()
-data.process.poly_detrend(degree=5, keep_og=True, channels='gfilt')
+# data.process.poly_detrend(degree=5, keep_og=True, channels='gfilt')
+data.process.highpass_filter(filter_order=2, frequency_cutoff=0.1, keep_og=True, channels='lpfilt')
 
 # Find direction of the blob
 P = np.polynomial.Polynomial
-nanlocs = np.isnan(data.ch1_gfilt_pdetrend) | np.isnan(data.ch2_gfilt_pdetrend)
-fit_poly = P.fit(data.ch1_gfilt_pdetrend[~nanlocs], data.ch2_gfilt_pdetrend[~nanlocs], deg=1)
+nanlocs = np.isnan(data.ch1_lpfilt_hpfilt) | np.isnan(data.ch2_lpfilt_hpfilt)
+fit_poly = P.fit(data.ch1_lpfilt_hpfilt[~nanlocs], data.ch2_lpfilt_hpfilt[~nanlocs], deg=1)
 slope = fit_poly.convert().coef[1]
 
 # PLot data
 plt.plot(data.ch1, data.ch2)
-plt.plot(data.ch1_gfilt, data.ch2_gfilt)
-plt.plot(data.ch1_gfilt_pdetrend, data.ch2_gfilt_pdetrend)
+plt.plot(data.ch1_lpfilt, data.ch2_lpfilt)
+plt.plot(data.ch1_lpfilt_hpfilt, data.ch2_lpfilt_hpfilt)
 
-plt.plot(data.ch1_gfilt_pdetrend, fit_poly(data.ch1_gfilt_pdetrend))
+plt.plot(data.ch1_lpfilt_hpfilt, fit_poly(data.ch1_lpfilt_hpfilt))
 
 #%% All Lissajous figures
 # Load data
@@ -403,17 +570,20 @@ for i, file in enumerate(data_files):
 #%% Hilbert Transform
 
 # Load data
-data_dir = '/data/marcos/FloClock_data/data'
+data_dir = '/media/marcos/DATA//marcos/FloClock_data/data'
 file_inx = 2
 
 data_files = contenidos(data_dir, filter_ext='.abf')
 pair_guide_file = contenidos(data_dir, filter_ext='.xlsx').pop()
 
 # Process data a bit
-data = au.load_data(data_files[file_inx], gauss_filter=True, override_raw=True)
+data = au.load_data(data_files[file_inx], gauss_filter=False)
+data.process.lowpass_filter()
 data = data.process.downsample()
-data.process.poly_detrend(degree=5)
-data.process.gaussian_filter(sigma_ms=100)
+# data.process.poly_detrend(degree=5)
+# data.process.gaussian_filter(sigma_ms=100)
+data.process.highpass_filter()
+data.process.lowpass_filter(frequency_cutoff=2)
 data.process.calc_phase_difference()
 data.process.magnitude_detrend(keep_og=True)
 data.process.calc_phase_difference(channels='mdetrend')
@@ -423,7 +593,7 @@ plt.figure(figsize=(18, 5))
 ax1 = plt.subplot(2,2,1)
 plt.plot(data.times, data.ch1, label='data')
 plt.plot(data.times, data.ch1_magnitude, label='envelope')
-plt.plot(data.times, data.ch1_mdetrend, label='data/envelope')
+plt.plot(data.times, data.ch1_mdetrend, label='data÷envelope')
 plt.title('Channel 1')
 plt.legend()
 
@@ -576,8 +746,8 @@ for pp, pv, prominence in zip(peak_pos, peak_val, props['prominences']):
 #%% Plot peaks of a run
 
 # Load data
-# data_dir = '/data/marcos/FloClock_data/data'
-data_dir = '/data/marcos/FloClock_data/data - mecamilamina'
+data_dir = '/media/marcos/DATA//marcos/FloClock_data/data'
+# data_dir = '/media/marcos/DATA//marcos/FloClock_data/data - mecamilamina'
 file_inx = 0
 
 data_files = contenidos(data_dir, filter_ext='.abf')
@@ -691,22 +861,24 @@ for i, file in enumerate(data_files):
 
 #%% Time dependent period
 
-
 # Load data
-data_dir = '/data/marcos/FloClock_data/data'
-# data_dir = '/data/marcos/FloClock_data/data - mecamilamina'
-file_inx = 10
+data_dir = '/media/marcos/DATA/marcos/FloClock_data/data'
+# data_dir = '/media/marcos/DATA/marcos/FloClock_data/data - mecamilamina'
+file_inx = 4
 outlier_mode_proportion = 1.8 #1.8 for normal runs
 
 data_files = contenidos(data_dir, filter_ext='.abf')
 
 # Process data a bit
-data = au.load_data(data_files[file_inx], gauss_filter=True, override_raw=False)
+data = au.load_data(data_files[file_inx], gauss_filter=False)
+data.process.lowpass_filter(frequency_cutoff=10, keep_og=True)
 data = data.process.downsample()
-data.process.poly_detrend(degree=5, channels='gfilt')
-data.process.gaussian_filter(sigma_ms=100, keep_og=True, channels='gfilt')
+# data.process.poly_detrend(degree=5, channels='gfilt')
+# data.process.gaussian_filter(sigma_ms=100, keep_og=True, channels='gfilt')
+data.process.highpass_filter(frequency_cutoff=0.1, keep_og=True, channels='lpfilt')
+data.process.lowpass_filter(frequency_cutoff=2, keep_og=True, channels='lpfilt_hpfilt')
 
-data.process.find_peaks(channels='gfilt_gfilt2', period_percent=0.4, prominence=3)
+data.process.find_peaks(channels='lpfilt_hpfilt_lpfilt', period_percent=0.4, prominence=3)
 
 # Plot data and peaks
 
@@ -716,9 +888,9 @@ modes = []
 trends = []
 P = np.polynomial.Polynomial
 for ax, ax_p, ch in zip((ax1, ax2), (ax3, ax4), (1, 2)):
-    ax.plot(data.times, data[f'ch{ch}'] - data.process.get_trend(ch), color='0.6')
-    ax.plot(data.times, data[f'ch{ch}_gfilt'])
-    ax.plot(data.times, data[f'ch{ch}_gfilt_gfilt2'])
+    ax.plot(data.times, data[f'ch{ch}'] - data.process.get_hptrend(ch), color='0.6')
+    ax.plot(data.times, data[f'ch{ch}_lpfilt_hpfilt'])
+    ax.plot(data.times, data[f'ch{ch}_lpfilt_hpfilt_lpfilt'])
 
     # plot timeseries    
     peak_pos = data.process.get_peak_pos(ch)
@@ -731,7 +903,7 @@ for ax, ax_p, ch in zip((ax1, ax2), (ax3, ax4), (1, 2)):
     counts, bins = np.histogram(periods)
     bin_centers = bins[:-1] + np.diff(bins) / 2
     period_mode = bin_centers[np.argmax(counts)]
-    ax_p.plot(period_times, periods, 'o', color='C04')
+    ax_p.plot(period_times, periods, 'o', color='C02')
     ax_p.plot(period_times[periods > outlier_mode_proportion*period_mode], periods[periods > outlier_mode_proportion*period_mode], 'ro')
     
     # plot mode, mean and trend line
@@ -746,6 +918,48 @@ for ax, ax_p, ch in zip((ax1, ax2), (ax3, ax4), (1, 2)):
     trends.append(trend_poly.convert().coef[1])
     
     modes.append(period_mode)
+    
+    # add period calculated through threshold crossings
+    rising = data.process.get_crossings(ch, 'rising', 5, 0.5)
+    falling = data.process.get_crossings(ch, 'falling', 5, 0.5)
+    
+    ax.plot(data.times.values[rising], data[f'ch{ch}_lpfilt_hpfilt_lpfilt'][rising], 'o', c='C3')
+    ax.plot(data.times.values[falling], data[f'ch{ch}_lpfilt_hpfilt_lpfilt'][falling], 'o', c='C4')
+    
+    rising_times, rising_periods = data.process.get_edge_periods(ch, 'rising')
+    falling_times, falling_periods = data.process.get_edge_periods(ch, 'falling')
+    ax_p.plot(rising_times, rising_periods, 'x', c='C3')
+    ax_p.plot(falling_times, falling_periods, '*', c='C4')
+
+    # calculate average differences between period calculation types
+    
+    # since rising and falling edge sometimes skip cycles, we must find the peak that corresponds to each edge detected
+    corresponding_pairs = []
+    for i, ptime in enumerate(rising_times):
+        distances = np.abs(period_times - ptime)
+        closest_inx = np.argmin( distances )
+        
+        # average distance between peaks is in the order of 3
+        # average distance between rising edge and peak is usually less than 1
+        if distances[closest_inx] < 1:
+            corresponding_pairs.append([i, closest_inx])
+    
+    # rising and falling edge will always have the same corresponding peak
+    arp = [] # abs difference between rising and peaks
+    afp = [] # abs difference between falling and peaks
+    for edge_inx, peak_inx in corresponding_pairs:
+        arp.append( np.abs(rising_periods[edge_inx] - periods[peak_inx] ))
+        afp.append( np.abs(falling_periods[edge_inx] - periods[peak_inx] ))
+    arp = np.mean(arp)
+    afp = np.mean(afp)
+    
+    # falling and rising edge periods always have corresponding points
+    afr = np.mean( np.abs(rising_periods - falling_periods))
+    print(f'Ch{ch}')
+    print(f'\t{afr = :.3f}')
+    print(f'\t{arp = :.3f}')
+    print(f'\t{afp = :.3f}')
+
 
 if hasattr(data.metadata, 'mec_start_sec'):
     for ax in (ax1, ax3, ax2, ax4):
@@ -761,8 +975,8 @@ ax2.set_ylabel('mV')
 ax3.set_ylabel('period (s)')
 ax4.set_ylabel('period (s)')
 
-ax1.set_title('Channel 1')
-ax2.set_title('Channel 2')
+ax1.set_title(f'Channel 1: {data.metadata.ch1}')
+ax2.set_title(f'Channel 2: {data.metadata.ch2}')
 ax3.set_title(f'Channel 1 period | mode = {modes[0]:.2f} sec')
 ax4.set_title(f'Channel 2 period | mode = {modes[1]:.2f} sec')
 
@@ -872,9 +1086,9 @@ for i, file in enumerate(data_files):
 #%% Rolling average detrending
 
 # Load data
-# data_dir = '/data/marcos/FloClock_data/data'
+data_dir = '/media/marcos/DATA/marcos/FloClock_data/data'
 # data_dir = '/home/user/Documents/Doctorado/Fly clock/FlyClock_data/data/'
-data_dir = '/data/marcos/FloClock_data/data - mecamilamina'
+# data_dir = '/media/marcos/DATA/marcos/FloClock_data/data - mecamilamina'
 file_inx = 10
 outlier_mode_proportion = 5 # 1.8 for normla runs
 
@@ -1308,7 +1522,7 @@ for i, file in enumerate(iter_over):
 
 # from matplotlib import lines
 
-data_dir = Path('/data/marcos/FloClock_data/output')
+data_dir = Path('/media/marcos/DATA/marcos/FloClock_data/output')
 # data_dir = Path('/home/user/Documents/Doctorado/Fly clock/FlyClock_data/output/')
 upstroke_file = data_dir / 'upstroke_delay_stats.dat'
 phase_diff_file = data_dir / 'phase_differences.csv'
@@ -1382,8 +1596,60 @@ for key in categories.keys():
 ax1.legend()
 plt.tight_layout()
 
-plt.savefig(f'/data/marcos/FloClock pics/{pair[0]} vs {pair[1]}')
+# plt.savefig(f'/data/marcos/FloClock pics/{pair[0]} vs {pair[1]}')
 
+
+#%% Correlate with distance between points
+
+""" Correlates the distance between cells (Extracted from pictures) with the 
+delay between the oscillations (the lags) as calculated by phase differences."""
+
+base_dir = Path('/media/marcos/DATA/marcos/FloClock_data')
+dist_dir = base_dir / 'todos los registros/pics'
+output_dir = base_dir / 'output'
+data_dir = base_dir / 'data'
+
+dist_file = dist_dir / 'distances.csv'
+phase_diff_file = output_dir / 'phase_differences.csv'
+upstroke_file = output_dir / 'upstroke_delay_stats.dat'
+pair_guide_file = data_dir / 'par_guide.xlsx'
+
+
+#load data and save it all to a single dataframe
+upstroke_stats = pd.read_csv(upstroke_file, sep=r'\s+').sort_values('#rec').reset_index(drop=True)
+phase_diff = pd.read_csv(phase_diff_file).sort_values('name').reset_index(drop=True)
+pair_guide = pd.read_excel(pair_guide_file, index_col=0)
+distances  = pd.read_csv(dist_file)
+stats = pd.concat( [phase_diff, upstroke_stats.loc[:, [ '1', '2', 'mean', 'std']].rename(columns={'mean': 'upstroke_mean', 'std':'upstroke_std'})], axis='columns')
+
+# remove empty rows
+for i, d in enumerate(distances.Distance):
+    if np.isnan(d):
+        distances.drop(labels=i, inplace=True)
+
+# add the name of the files to the distances
+distances = distances.astype({'Registro':int})
+distances['name'] = [pair_guide.loc[rec]['name'] for rec in distances.Registro]
+
+
+# add a few new columns
+stats['type'] = [n[:2] for n in stats['name']]
+stats['well_ordered'] = [ch1+ch2==t for ch1, ch2, t in zip(stats['1'], stats['2'], stats.type)]
+
+for name in ['upstroke_mean', 'meanlag', 'modelag', 'K']:
+    stats.loc[stats['well_ordered'], name ] *= -1
+    
+# add the info I want to plot to my distances df
+distances['lag'] = [lag for lag, name in zip(stats.meanlag, stats['name']) if name in distances['name'].values]
+distances['type'] = [n[:2] for n in distances['name']]
+
+grouped = distances.groupby('type')
+for key, group in grouped:
+    plt.plot(group.lag, group['Scaled distance'], 'o', label=key)
+
+plt.legend()
+plt.xlabel('phase difference lag [sec]')
+plt.ylabel('distance [soma radii]')
 
 #%% Find peak density
 
@@ -1394,7 +1660,7 @@ from utils import sort_by
 
 # Load data
 # data_dir = '/data/marcos/FloClock_data/data'
-data_dir = '/data/marcos/FloClock_data/data - mecamilamina'
+data_dir = '/media/marcos/DATA/marcos/FloClock_data/data - mecamilamina'
 file_inx = 10
 ch_inx = 1 # channel index
 
@@ -1548,8 +1814,8 @@ def peak_prop_density(times, peak_output, prop, box_size=60, box_overlap=0.3):
 
 # Load data
 # data_dir = '/data/marcos/FloClock_data/data'
-data_dir = '/data/marcos/FloClock_data/data - mecamilamina'
-save_dir = '/data/marcos/FloClock pics/mecamilamina/Peak prop densities'
+data_dir = '/media/marcos/DATA/marcos/FloClock_data/data - mecamilamina'
+save_dir = '/media/marcos/DATA/marcos/FloClock pics/mecamilamina/Peak prop densities'
 output_dir = Path(data_dir) / 'output' / 'peak_property_densities' 
 
 data_files = contenidos(data_dir, filter_ext='.abf')
@@ -1673,9 +1939,9 @@ for i, file in enumerate(data_files):
             
 #%% Explore all peak prop densities
 
-data_dir = Path('/data/marcos/FloClock_data/data - mecamilamina')
+data_dir = Path('/media/marcos/DATA/marcos/FloClock_data/data - mecamilamina')
 peak_prop_dir = data_dir / 'output' / 'peak_property_densities' 
-save_dir = '/data/marcos/FloClock pics/mecamilamina'
+save_dir = '/media/marcos/DATA/marcos/FloClock pics/mecamilamina'
 
 stats_file = peak_prop_dir / 'stats.csv'
 data_files = contenidos(peak_prop_dir)
@@ -1769,11 +2035,11 @@ save_dir = Path(save_dir)
 
 # Load data
 # data_dir = '/data/marcos/FloClock_data/data'
-data_dir = '/data/marcos/FloClock_data/data - mecamilamina'
-save_dir = '/data/marcos/FloClock pics/mecamilamina/After mec/raw'
+data_dir = '/media/marcos/DATA/marcos/FloClock_data/data - mecamilamina'
+save_dir = '/media/marcos/DATA/marcos/FloClock pics/mecamilamina/After mec/raw'
 
 file_inx = 6
-plot_all = True
+plot_all = False # this means plot save and close
 extension = 200 # in seconds after mec
 
 data_files = contenidos(data_dir, filter_ext='.abf')
@@ -1856,5 +2122,495 @@ for i, file in enumerate(iter_over):
     if plot_all:
         plt.savefig(save_dir + f'/{data.metadata.file.stem}.png')
         plt.close(fig)
-        
+     
+#%% Calculate and save all cross correlations
+
+# Load data
+data_dir = '/media/marcos/DATA/marcos/FloClock_data/data'
+savedir = Path('/media/marcos/DATA/marcos/FloClock_data/data/output/cross_correlations')
+
+keep = 10000 # how many points of the cross correlation to keep in each direction
+
+data_files = contenidos(data_dir, filter_ext='.abf')
+# pair_guide_file = contenidos(data_dir, filter_ext='.xlsx').pop()
+
+for i, file in enumerate(data_files):
+    print(f'Running {file.stem}: {i+1}/{len(data_files)}')
     
+    # Process data a bit
+    data = au.load_data(file, gauss_filter=False, override_raw=False)
+    data.process.lowpass_filter(filter_order=2, frequency_cutoff=10)
+    data = data.process.downsample()
+    data.process.highpass_filter(filter_order=2, frequency_cutoff=0.1)
+    data.process.lowpass_filter(filter_order=2, frequency_cutoff=2, keep_og=True)
+    
+    lags, corr = data.process.cross_correlation()
+    lags2, corr2 = data.process.cross_correlation('lpfilt') # lags2 is equal to lags
+    
+    keep_slice = slice(int(len(corr)/2)-keep, int(len(corr)/2)+keep)
+    np.savez(savedir / file.stem,
+             lags = lags[keep_slice],
+             corr = corr[keep_slice],
+             corr2 = corr2[keep_slice],
+             )
+#%% Plot just one cross corr
+
+data_dir = Path('/media/marcos/DATA/marcos/FloClock_data/data/output/cross_correlations')
+pair_guide_file = data_dir.parent.parent / 'par_guide.xlsx'
+
+file_inx = 40
+
+correlation_files = contenidos(data_dir)
+pair_guide = pd.read_excel(pair_guide_file).sort_values('name', ignore_index=True).set_index('name', drop=True)
+
+file = correlation_files[file_inx]
+loaded = np.load(file)
+
+lags = loaded['lags']
+corr = loaded['corr']
+
+fig, ax = plt.subplots()
+ax.plot(lags, corr)
+ax.set_xlim(-8, 8)
+ax.set_title(file.stem)
+ax.set_xlabel('lag [sec]')
+ax.grid()
+
+#%% Analize all cross correlations
+import copy
+ 
+# load data
+data_dir = Path('/media/marcos/DATA/marcos/FloClock_data/data/output/cross_correlations')
+pair_guide_file = data_dir.parent.parent / 'par_guide.xlsx'
+
+correlation_files = contenidos(data_dir)
+pair_guide = pd.read_excel(pair_guide_file).sort_values('name', ignore_index=True).set_index('name', drop=True)
+
+correlations = dict(
+    LL = [],
+    LS = [],
+    SS = [],
+    LR = [],
+    SR = [],
+)
+
+correlations2 = copy.deepcopy(correlations)
+
+lags_df = pd.DataFrame(columns=['type', 'lag', 'lag2'])
+
+# Extract data from the saved correlations
+for corr_file in correlation_files:
+    loaded = np.load(corr_file)
+     
+    lags = loaded['lags']
+    corr = loaded['corr']
+    corr2 = loaded['corr2']
+    
+    # check if we have to invert the correlation because of switched order of channels
+    line = pair_guide.loc[corr_file.stem]
+    if line.ch1 + line.ch2 != line.par:
+        corr = corr[::-1]
+        corr = corr2[::-1]
+        
+    correlations[line.par].append(corr)
+    correlations2[line.par].append(corr2)
+    
+    lag = lags[np.argmax(corr)]
+    lag2 = lags[np.argmax(corr2)]
+    lags_df = pd.concat(
+        [lags_df, 
+         pd.DataFrame([[line.par, lag, lag2]], columns=lags_df.columns)], 
+        axis=0)
+           
+# convert correlation data to arrays
+correlations = {k:np.asarray(v) for k, v in correlations.items()}
+correlations2 = {k:np.asarray(v) for k, v in correlations2.items()}
+
+corr_mean = {k:v.mean(axis=0) for k, v in correlations.items()}
+corr_std = {k:v.std(axis=0) for k, v in correlations.items()}
+
+# plot all correlations
+fig, axarr = plt.subplots(2,3, constrained_layout=True, figsize=[15, 7])
+for ax, (kind, corr), std in zip(axarr.flat, corr_mean.items(), corr_std.values()):
+    ax.plot(lags, corr)
+    ax.fill_between(lags, corr+std, corr-std, color='0.7')
+    
+    ax.set_title(kind)
+    ax.grid(axis='x')
+    ax.set_xlabel('time [sec]')
+
+# make boxplot
+ax = axarr.flat[-1]
+lags_df['condensed_type'] = [(v if 'R' not in v else 'R') for v in lags_df.type]
+lags_df.boxplot('lag', by='condensed_type', ax=ax, grid=False)
+
+# add points to boxplot
+for i, (kind, points) in enumerate(lags_df.groupby('condensed_type')):
+    ax.plot(np.random.normal(1+i, 0.04, size=len(points)), points.lag, 'k.')
+    
+ax.grid(axis='y')
+ax.set_ylim(-0.3, 0.3)
+
+# a few statistical tests
+print('\n Difference from zero: p_t = students-t | p_w : wilcoxon | p_s : sign')
+for kind, table in lags_df.groupby('condensed_type'):
+    
+    points = table.lag
+    res_t = stats.ttest_1samp(points, popmean=0)
+    res_w = stats.wilcoxon(points)
+    res_s = stats.binomtest(sum(x>0 for x in points), len(points))
+    ci = res_t.confidence_interval()
+    
+    print(f'{kind}\tp_t:{res_t.pvalue:.2e} \tp_w:{res_w.pvalue:.2e} \tp_s:{res_s.pvalue:.2e} \t| mean = ({np.mean(points):.3f} ± [{ci.low:.3f}, {ci.high:.3f}])ms')
+
+# pairwise statistical tests
+pairs = ['LL', 'SS'], ['LL', 'LS'], ['SS', 'LS']
+print('\n Pariwise tests: p_t = students-t | p_w : mann-whitney')
+for pair in pairs:
+    first = lags_df.lag[lags_df.condensed_type==pair[0]]
+    second = lags_df.lag[lags_df.condensed_type==pair[1]]
+    
+    res_t = stats.ttest_ind(first, second)
+    res_w = stats.mannwhitneyu(first, second)
+        
+    print(pair, f'p_t:{res_t.pvalue:.2e} \tp_w:{res_w.pvalue:.2e}')
+
+
+#%% Crossings exploration
+
+# Load data
+data_dir = '/media/marcos/DATA/marcos/FloClock_data/data'
+# data_dir = '/media/marcos/DATA/marcos/FloClock_data/data - mecamilamina'
+file_inx = 0
+max_distance = 0.3 # in units of average period
+
+data_files = contenidos(data_dir, filter_ext='.abf')
+
+# Process data a bit
+data = au.load_data(data_files[file_inx], gauss_filter=False)
+data.process.lowpass_filter(filter_order=2, frequency_cutoff=10)
+data = data.process.downsample()
+data.process.highpass_filter(filter_order=2, frequency_cutoff=0.1)
+data.process.lowpass_filter(filter_order=2, frequency_cutoff=2)
+
+data.process.find_peaks(period_percent=0.4, prominence=3)
+rising1 = data.process.get_crossings(1, 'rising', threshold=5, peak_min_distance=0.5)
+rising2 = data.process.get_crossings(2, 'rising', threshold=5, peak_min_distance=0.5)
+
+# plot example data
+plt.subplot(2,1,1)
+plt.plot(data.times, data.ch1, label=data.metadata.ch1)
+plt.plot(data.times[rising1], data.ch1[rising1], '.', c='C2')
+# plt.plot(data.times[filtered_pairs[:, 0]], data.ch1[rising1], '.', c='C2')
+
+plt.plot(data.times, data.ch2, label=data.metadata.ch2)
+plt.plot(data.times[rising2], data.ch2[rising2], '.', c='C3')
+
+plt.title(data_files[file_inx].stem)
+plt.legend()
+# plt.xlim((74.32534052419356, 99.97859576612906))
+plt.gcf().set_size_inches([14.56,  4.8 ])
+
+
+filtered_pairs = []
+lags = []
+maxd = max_distance * np.mean(data.process.get_periods(1)[1])
+for crossing in rising1:
+    crossing_time = data.times.values[crossing]
+    closest_time = find_closest_value(data.times.values[rising2], crossing_time)
+    closest = find_closest_value(rising2, crossing)
+    
+    if np.abs(closest_time - crossing_time) > maxd:
+        print('skipping')
+        continue
+    
+    filtered_pairs.append((crossing, closest))   
+    lags.append(crossing_time - closest_time)
+    
+    plt.plot([data.times[crossing], data.times[closest]], [data.ch1[crossing], data.ch2[closest]], 'k')
+    
+filtered_pairs = np.asarray(filtered_pairs)
+lags = np.asarray(lags)
+
+# plt.plot(data.times.values[filtered_pairs[:, 1]] + lags/2, np.ones(lags.shape)*5, 'x')
+
+plt.subplot(4,1,3)
+plt.plot(data.times.values[filtered_pairs[:, 0]], lags, 'o')
+ylim = np.abs(plt.ylim()).max()
+plt.ylim(-ylim, ylim)
+plt.grid(axis='y')
+
+plt.subplot(4,1,4)
+ptimes, periods = data.process.get_periods(1)
+plt.plot(ptimes, periods, 'o')
+ptimes, periods = data.process.get_periods(2)
+plt.plot(ptimes, periods, 'o')
+
+# plt.ylim(0, None)
+plt.grid(axis='y')
+
+#%% Calculate and save all crossing lags
+
+# Load data
+data_dir = '/media/marcos/DATA/marcos/FloClock_data/data'
+savedir = Path('/media/marcos/DATA/marcos/FloClock_data/data/output/crossings')
+# data_dir = '/media/marcos/DATA/marcos/FloClock_data/data - mecamilamina'
+max_distance = 0.3 # in units of average period
+
+data_files = contenidos(data_dir, filter_ext='.abf')
+
+# Process data a bit
+for i, file in enumerate(data_files):
+    print(f'Running {file.stem}: {i+1}/{len(data_files)}')
+    
+    # Process data a bit
+    data = au.load_data(file, gauss_filter=False)
+    data.process.lowpass_filter(filter_order=2, frequency_cutoff=10)
+    data = data.process.downsample()
+    data.process.highpass_filter(filter_order=2, frequency_cutoff=0.1)
+    data.process.lowpass_filter(filter_order=2, frequency_cutoff=2)
+    
+    data.process.find_peaks(period_percent=0.4, prominence=3)
+    rising1 = data.process.get_crossings(1, 'rising', threshold=5, peak_min_distance=0.5)
+    rising2 = data.process.get_crossings(2, 'rising', threshold=5, peak_min_distance=0.5)
+        
+    filtered_pairs = []
+    lags = []
+    maxd = max_distance * np.mean(data.process.get_periods(1)[1])
+    for crossing in rising1:
+        crossing_time = data.times.values[crossing]
+        closest_time = find_closest_value(data.times.values[rising2], crossing_time)
+        closest = find_closest_value(rising2, crossing)
+        
+        if np.abs(closest_time - crossing_time) > maxd:
+            print('skipping')
+            continue
+        
+        filtered_pairs.append((crossing, closest))   
+        lags.append(crossing_time - closest_time)
+        
+    filtered_pairs = np.asarray(filtered_pairs)
+    lags = np.asarray(lags)
+    tperiods1, periods1 = data.process.get_periods(1)
+    tperiods2, periods2 = data.process.get_periods(2)
+    
+    np.savez(savedir / file.stem,
+             lags = lags,
+             crossings = data.times.values[filtered_pairs[:, 1]] + lags/2,
+             tperiods1 = tperiods1,
+             periods1 = periods1,
+             tperiods2 = tperiods2,
+             periods2 = periods2,
+             )
+#%% Analize crossings info
+import copy
+ 
+# load data
+data_dir = Path('/media/marcos/DATA/marcos/FloClock_data/data/output/crossings')
+pair_guide_file = data_dir.parent.parent / 'par_guide.xlsx'
+
+crossings_files = contenidos(data_dir)
+pair_guide = pd.read_excel(pair_guide_file).sort_values('name', ignore_index=True).set_index('name', drop=True)
+
+lags = dict(
+    LL = [],
+    LS = [],
+    SS = [],
+    LR = [],
+    SR = [],
+)
+
+crossings = copy.deepcopy(lags)
+
+# Extract data from the saved correlations
+for cross_file in crossings_files:
+    loaded = np.load(cross_file)
+     
+    lag_points = loaded['lags']
+    cross_points = loaded['crossings']
+    
+    # check if we have to invert the correlation because of switched order of channels
+    line = pair_guide.loc[cross_file.stem]
+    if line.ch1 + line.ch2 != line.par:
+        lag_points *= -1
+        
+    lags[line.par].append(lag_points)
+    crossings[line.par].append(cross_points)
+
+# convert correlation data to arrays
+all_lags = {k:[x for array in v for x in array] for k, v in lags.items()}
+all_crossings = {k:[x for array in v for x in array] for k, v in crossings.items()}
+
+# fig, ax = plt.subplots()
+# for i, ((kind, cross), lag) in enzip(all_crossings.items(), all_lags.values()):
+#     ax.plot(cross, lag, '.', label=kind, c=f'C{i}')
+#     ax.axhline(np.mean(lag), color=f'C{i}')
+    
+# ax.legend()
+
+
+fig, axarr = plt.subplots(3, 2, constrained_layout=True, width_ratios=[4,1], sharey='row')
+left = axarr[:, 0]
+right = axarr[:, 1]
+
+for i, (ax, (kind, cross), lag) in enzip(left, crossings.items(), lags.values()):
+    if 'R' in kind:
+        continue
+    for this_cross, this_lag in zip(cross, lag):
+        ax.plot(this_cross, this_lag, '.', label=kind, c=f'C{i}', rasterized=True)
+
+    ax.grid(axis='y')
+    ax.legend(handles=[], title=kind, loc='upper right')
+    ax.set_xlim(0, 500)
+    ax.set_ylim(-0.5, 0.5)
+fig.suptitle('Crossing lag trends')
+
+for i, (ax, (kind, lag)) in enzip(right, all_lags.items()):
+    if 'R' in kind:
+        continue
+    ax.hist(lag, orientation='horizontal', color=f'C{i}', bins=25)
+    ax.grid(axis='y')
+
+# boxplots
+fig2, ax = plt.subplots(figsize=[3.98, 4.8 ])
+order = ['LL', 'SS', 'LS', 'LR', 'SR']
+ax.boxplot([all_lags[kind] for kind in order], showfliers=False)
+ax.set_xticklabels(order)
+ax.grid(axis='y')
+
+colors_dict = {'SS': '#d06c9eff', 'LS': '#1db17eff', 'LL': '#006680ff', 'LR':'0.3', 'SR':'0.3'}
+
+for i, kind in enumerate(order):
+    points = all_lags[kind]
+    kde = stats.gaussian_kde(points)
+    max_val = kde(points).max()
+    
+    ax.plot(np.random.normal(1+i, kde(points)/max_val/8, size=len(points)), points, 
+            '.', c=colors_dict[kind], alpha=0.2, zorder=1, rasterized=True)
+
+# a few statistical tests
+print('\n Difference from zero: p_t = students-t | p_w : wilcoxon | p_s : sign')
+for kind, points in all_lags.items():
+    
+    res_t = stats.ttest_1samp(points, popmean=0)
+    res_w = stats.wilcoxon(points)
+    res_s = stats.binomtest(sum(x>0 for x in points), len(points))
+    ci = res_t.confidence_interval()
+    
+    print(f'{kind}\tp_t:{res_t.pvalue:.2e} \tp_w:{res_w.pvalue:.2e} \tp_s:{res_s.pvalue:.2e} \t| mean = ({np.mean(points):.3f} ± [{ci.low:.3f}, {ci.high:.3f}])ms')
+
+# pairwise statistical tests
+pairs = ['LL', 'SS'], ['LL', 'LS'], ['SS', 'LS']
+print('\n Pariwise tests: p_t = students-t | p_w : mann-whitney')
+for pair in pairs:
+    first, second = all_lags[pair[0]], all_lags[pair[1]]
+    
+    res_t = stats.ttest_ind(first, second)
+    res_w = stats.mannwhitneyu(first, second)
+        
+    print(pair, f'p_t:{res_t.pvalue:.2e} \tp_w:{res_w.pvalue:.2e}')
+
+
+#%% Align crossings with tpd
+
+import copy
+ 
+# load data
+data_dir = Path('/media/marcos/DATA/marcos/FloClock_data/data/output/crossings')
+pair_guide_file = data_dir.parent.parent / 'par_guide.xlsx'
+tpd_file = data_dir.parent.parent.parent / 'tiempos_post_diseccion' / 'info.xlsx'
+
+crossings_files = contenidos(data_dir)
+pair_guide = (pd.read_excel(pair_guide_file)
+              .sort_values('rec', ignore_index=True)
+              .set_index('name', drop=True)
+              )
+tpd_data = pd.concat(sheet for name, sheet in pd.read_excel(tpd_file, sheet_name=None).items() 
+                     if name not in ('large', 'small')).sort_values('registro', ignore_index=True)
+pair_guide['tpd'] = tpd_data['tiempo_post_diseccion (mins)'].values
+
+lags = dict(
+    LL = [],
+    LS = [],
+    SS = [],
+    LR = [],
+    SR = [],
+)
+
+crossings = copy.deepcopy(lags)
+
+# Extract data from the saved correlations
+for cross_file in crossings_files:
+    loaded = np.load(cross_file)
+     
+    lag_points = loaded['lags']
+    cross_points = loaded['crossings']
+    
+    # check if we have to invert the correlation because of switched order of channels
+    line = pair_guide.loc[cross_file.stem]
+    if line.ch1 + line.ch2 != line.par:
+        lag_points *= -1
+    
+    lags[line.par].append(lag_points)
+    crossings[line.par].append(cross_points/60 + line.tpd)
+
+# concatenate all data into single arrays
+all_lags = {k:[x for array in v for x in array] for k, v in lags.items()}
+all_crossings = {k:[x for array in v for x in array] for k, v in crossings.items()}
+
+fig, axarr = plt.subplots(3, 2, constrained_layout=True, figsize=[6.6, 5],
+                          width_ratios=[4,1], sharey='row', sharex='col')
+left = axarr[:, 0]
+right = axarr[:, 1]
+
+P = np.polynomial.Polynomial
+for i, (ax, (kind, cross), lag) in enzip(left, all_crossings.items(), all_lags.values()):
+    if 'R' in kind:
+        continue
+
+    trend = P.fit(cross, lag, deg=1)
+    slope = trend.convert().coef[1]
+    
+    ax.plot(cross, lag, '.', label=kind, c=f'C{i}', rasterized=True)
+    ax.plot( x := np.array([min(cross), max(cross)]), trend(x), 'k')
+    
+    ax.grid(axis='y')
+    ax.legend(handles=[], title=f'{kind}: {slope=:.1e}', loc='upper right')
+    
+    # ax.set_xlim(0, 500)
+    ax.set_ylim(-0.5, 0.5)
+    ax.set_ylabel('lag [sec]')
+    
+    print()
+    print(kind, '| Global slope:', f'{slope:.4f}')
+    for this_cross, this_lag in zip(crossings[kind], lags[kind]):
+        this_trend = P.fit(this_cross, this_lag, deg=1)
+        ax.plot( x := np.array([min(this_cross), max(this_cross)]), trend(x), '0.5')
+        print(f'{this_trend.convert().coef[1]:.4f}')
+        
+fig.suptitle('Crossing lag trends')
+
+for i, (ax, (kind, lag)) in enzip(right, all_lags.items()):
+    if 'R' in kind:
+        continue
+    ax.hist(lag, orientation='horizontal', color=f'C{i}', bins=25)
+    ax.grid(axis='y')
+
+axarr[-1, 0].set_xlabel('time + tpd [min]')
+axarr[-1, 1].set_xlabel('counts')
+
+plt.figure()
+concat_cross = []
+concat_lag = []
+for i, ((kind, cross), lag) in enzip(all_crossings.items(), all_lags.values()):
+    if 'R' in kind:
+        continue
+    
+    plt.plot(cross, lag - np.mean(lag), '.')
+    concat_cross.extend(cross)
+    concat_lag.extend( (np.asarray(lag) - np.mean(lag)) )
+
+global_trend = P.fit(concat_cross, concat_lag, deg=1)
+plt.plot(x := np.array([min(concat_cross), max(concat_cross)]), global_trend(x), 
+         'k', label=f'slope={global_trend.convert().coef[1]:.1e}')
+plt.legend()
