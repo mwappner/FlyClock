@@ -63,15 +63,15 @@ def peak_lags(t, x1, x2):
 
 
 #%% Test all steps (oscillation, phase, lag)
-a = 0.002
-b = 1
-phi = np.pi*0.99
+# a = 0.002
+# b = 1
+phi = np.pi*0.3
 
-period = lambda t: a*t+b
+# period = lambda t: a*t+b
 
 t = np.linspace(0, 1000, 50000)
 # phase = 2*np.pi / period(t) * t
-phase = 200* np.log(t+5)
+phase = 200* np.log(t+500)
 
 # x = lambda phi: np.sin(2*np.pi / (period(t))**0.75 * t + phi)
 x = lambda phi: np.sin(phase + phi)
@@ -89,7 +89,7 @@ ax2.plot(*peak_periods(t, x2))
 
 trend = np.polynomial.Polynomial.fit(*peak_periods(t, x1), deg=1)
 ax2.plot(t, trend(t), '--k')
-ax2.plot(t, period(t), ':k')
+# ax2.plot(t, period(t), ':k')
 ax2.set_title('periods')
 
 ax3.plot(*peak_lags(t, x1, x2), '.')
@@ -101,15 +101,13 @@ print('Lag trend:', lag_trend.convert().coef[1])
 
 #%% Lag evolution in time for multiple initial offsets (lags)
 
-a = 0.002
-b = 1
+w = 20
+t0 = -200
 phis = np.linspace(1e-3, np.pi, endpoint=False)
 
-period = lambda t: a*t+b
-
-t = np.linspace(0, 1000, 50000)
+t = np.linspace(0, 20000, 100000)
 # phase = 2*np.pi / period(t) * t
-phase = 500 * np.log(t+5)
+phase = w * np.log(t-t0)
 
 # x = lambda phi: np.sin(2*np.pi / (period(t))**0.75 * t + phi)
 x = lambda phi: np.sin(phase + phi)
@@ -125,41 +123,44 @@ for c, phi in zip(colors_list, phis):
     ax1.plot(*peak_lags(t, x1, x2), '.', c=c)
 
     period_slope = trend.convert().coef[1]
-    # lag_slope = (c := lag_trend.convert().coef)[1] if len(c)==2 else 0
     lag_slope = lag_trend.convert().coef[1]
     
     phi /= np.pi
-    t_slope, = ax2.plot(phi, a, '.', c='0.5', label='theory slope')
-    p_slope, = ax2.plot(phi, period_slope, '.', c='k', label='period slope')
-    ax2.plot(phi, lag_slope, '.', c=c)
+    # t_slope, = ax2.plot(phi, a, '.', c='0.5', label='theory slope')
+    p_slope, = ax2.plot(phi, period_slope/period_slope, '.', c='k', label=f'period slope = {period_slope:.3f}')
+    ax2.plot(phi, lag_slope/period_slope, '.', c=c)
 
 ax1.set_xlabel('time')
 ax1.set_ylabel('lag')
 ax1.set_ylim(-0.05, None)
+ax1.legend(handles=[], title=f'ω={w}\n$t_0$={t0}', loc='upper left')
 
 ax2.set_xlabel('initial phase [π rad]')
-ax2.set_ylabel('lag slope')
+ax2.set_ylabel('lag slope / period slope')
 ax2.grid()
 
-ax2.legend(handles = [t_slope, p_slope])
+ax2.legend(handles = [p_slope,])
 
-#%% Diff equation governing the phase
+#%% ODE governing the phase
 
 from scipy.integrate import odeint
 from scipy.optimize import curve_fit
 
-w = 200
+w = 10
+t0 = -86
+tf = 250
 
 def func(x, t):
-    return w/(t+5)
+    return w/(t-t0)
     
 
 x0 = [0]
-times = np.linspace(0, 100, 20000)
+times = np.linspace(0, tf, 20000)
 
 xs = odeint(func, x0, times)
 
-plt.subplot(2,1,1)
+plt.figure()
+plt.subplot(3,1,1)
 plt.plot(times, xs)
 
 def log(t, w, t0):
@@ -167,11 +168,64 @@ def log(t, w, t0):
     c = w * np.log(-t0)
     return w * np.log(t-t0) - c
 
-plt.plot(times, log(times, 200, -5), '--')
+plt.plot(times, log(times, w, t0), '--')
 plt.title('Phase')
 
-plt.subplot(2,1,2)
+plt.subplot(3,1,2)
 plt.plot(times, np.sin(xs))
 plt.title('sin(phase)')
 
-#%%
+plt.subplot(3,1,3)
+plt.plot(*peak_periods(times, np.sin(xs.flat)))
+plt.title('period')
+#%% Slope of period as a function of ODE parameters
+
+from matplotlib.colors import LogNorm
+
+ws = np.logspace(1, 2.5)
+t0s = -np.logspace(0, 2.5)
+
+slopes = np.empty((ws.size, t0s.size))
+intercepts = np.empty((ws.size, t0s.size))
+
+for i, w in enumerate(ws):
+    for j, t0 in enumerate(t0s):
+        tf = 2500
+        
+        def func(x, t):
+            return w/(t-t0)
+        
+        x0 = [0]
+        times = np.linspace(0, tf, 20000)
+        
+        xs = odeint(func, x0, times)
+        
+        ptimes, periods = peak_periods(times, np.sin(xs.flat))
+    
+        trend = np.polynomial.Polynomial.fit(ptimes, periods, deg=1)
+        
+        inter, slope = trend.convert().coef
+        slopes[i, j] = slope
+        intercepts[i, j] = inter
+        
+
+plt.figure(constrained_layout=True)
+plt.subplot(1,2,1)
+plt.imshow(intercepts, origin='lower', aspect='auto', norm=LogNorm(),
+           extent=[-t0s.max(), -t0s.min(), ws.min(), ws.max()])
+plt.xlabel('$-t_0$')
+plt.ylabel('ω')
+plt.title('Intercept')
+plt.xscale('log')
+plt.yscale('log')
+plt.colorbar()
+
+plt.subplot(1,2,2)
+plt.imshow(slopes, origin='lower', aspect='auto', cmap='plasma',
+           extent=[-t0s.max(), -t0s.min(), ws.min(), ws.max()])
+plt.xlabel('$-t_0$')
+plt.ylabel('ω')
+plt.title('Slope')
+plt.xscale('log')
+plt.yscale('log')
+plt.colorbar()

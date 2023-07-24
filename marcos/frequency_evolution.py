@@ -16,16 +16,55 @@ import numpy as np
 from scipy import interpolate
 from scipy import stats
 
-from utils import contenidos, find_point_by_value, calc_mode, sort_by, cprint, clear_frame
+from utils import contenidos, find_point_by_value, calc_mode, sort_by, cprint, clear_frame, enzip
 import analysis_utils as au
+
+scolor = '#d06c9eff'
+lcolor = '#006680ff'
+#%% Visualzie raw data
+
+import pyabf
+
+# Load data
+data_dir = '/media/marcos/DATA/marcos/FloClock_data/tiempos_post_diseccion'
+file_inx = 1
+
+data_files = contenidos(data_dir, filter_ext='.abf')
+
+file = data_files[file_inx]
+abf = pyabf.ABF(file)
+
+chcount = abf.channelCount
+
+# create figure
+fig, axarr = plt.subplots(chcount, 2, figsize=[17, chcount*2.5+1], sharex='col', width_ratios=[3,1], sharey=True)
+
+for ch_i, ax_pair in zip(abf.channelList,  np.atleast_2d(axarr)):
+
+    # extract data
+    abf.setSweep(0, channel=ch_i)
+    times = abf.sweepX
+    ch = abf.sweepY
+      
+    ax_left, ax_right = ax_pair
+    ax_left.plot(times, ch)
+    
+    plt_slice = slice(120000,170000)
+    ax_right.plot(times[plt_slice], ch[plt_slice])
+
+fig.suptitle(file.name)
+
+print('file:', file.stem)
+print('duration:', f'{times[-1]/60:.3f}')
+print('sampling rate:', abf.sampleRate)
 
 #%% Time dependent period in one file
 
 # Load data
 # data_dir = '/media/marcos/DATA/marcos/FloClock_data/data'
 data_dir = '/media/marcos/DATA/marcos/FloClock_data/tiempos_post_diseccion'
-file_inx = 80
-outlier_mode_proportion = 1.6 #1.8 for normal runs
+file_inx = 1
+outlier_mode_proportion = 1.8 #1.8 for normal runs
 
 data_files = contenidos(data_dir, filter_ext='.abf')
 
@@ -40,24 +79,28 @@ rec_nr = data_files[file_inx].stem
 interval = tpd_data.loc[rec_nr]['rango_de_minutos'] if rec_nr in tpd_data.index else None
 
 # Process data a bit
-data = au.load_any_data(data_files[file_inx], interval=interval, gauss_filter=True, override_raw=False)
+data = au.load_any_data(data_files[file_inx], gauss_filter=False)
+data.process.lowpass_filter(frequency_cutoff=10, keep_og=True)
 data = data.process.downsample()
-data.process.poly_detrend(degree=5, channels='gfilt')
-data.process.gaussian_filter(sigma_ms=100, keep_og=True, channels='gfilt')
+data.process.highpass_filter(frequency_cutoff=0.1, keep_og=True, channels='lpfilt')
+data.process.lowpass_filter(frequency_cutoff=2, keep_og=True, channels='lpfilt_hpfilt')
 
-data.process.find_peaks(channels='gfilt_gfilt2', period_percent=0.4, prominence=3)
+data.process.find_peaks(channels='lpfilt_hpfilt_lpfilt', period_percent=0.4, prominence=3)
 
 # Plot data and peaks
-
 fig, (ax1, ax3, ax2, ax4) = plt.subplots(4, 1, figsize=(12, 8), constrained_layout=True, sharex=True, height_ratios=[2,1,2,1])
 
 modes = []
 trends = []
 P = np.polynomial.Polynomial
 for ax, ax_p, ch in zip((ax1, ax2), (ax3, ax4), (1, 2)):
-    ax.plot(data.times, data[f'ch{ch}'] - data.process.get_trend(ch), color='0.6')
-    ax.plot(data.times, data[f'ch{ch}_gfilt'])
-    ax.plot(data.times, data[f'ch{ch}_gfilt_gfilt2'])
+    # ax.plot(data.times, data[f'ch{ch}'] - data.process.get_trend(ch), color='0.6')
+    # ax.plot(data.times, data[f'ch{ch}_gfilt'])
+    # ax.plot(data.times, data[f'ch{ch}_gfilt_gfilt2'])
+    ax.plot(data.times, data[f'ch{ch}'] - data.process.get_hptrend(ch), color='0.6')
+    ax.plot(data.times, data[f'ch{ch}_lpfilt_hpfilt'])
+    ax.plot(data.times, data[f'ch{ch}_lpfilt_hpfilt_lpfilt'])
+
 
     # plot timeseries    
     peak_pos = data.process.get_peak_pos(ch)
@@ -67,24 +110,60 @@ for ax, ax_p, ch in zip((ax1, ax2), (ax3, ax4), (1, 2)):
 
     # plot periods
     period_times, periods = data.process.get_periods(ch)
-    counts, bins = np.histogram(periods)
-    bin_centers = bins[:-1] + np.diff(bins) / 2
-    period_mode = bin_centers[np.argmax(counts)]
-    ax_p.plot(period_times, periods, 'o', color='C04')
-    ax_p.plot(period_times[periods > outlier_mode_proportion*period_mode], periods[periods > outlier_mode_proportion*period_mode], 'ro')
+    period_mode = calc_mode(periods)   
+    # ax_p.plot(period_times, periods, 'o', color='C04')
+    # ax_p.plot(period_times[periods > outlier_mode_proportion*period_mode], periods[periods > outlier_mode_proportion*period_mode], 'ro')
     
     # plot mode, mean and trend line
-    valid_period_inxs = periods < outlier_mode_proportion*period_mode
+    valid_period_inxs = au.find_valid_periods(period_times, periods, outlier_mode_proportion, passes=2)
     valid_periods = periods[valid_period_inxs]
     period_mean = np.mean(valid_periods)
     modeline = ax_p.axhline(period_mode, color='0.3', linestyle='--', zorder=1)
     meanline = ax_p.axhline(period_mean, color='0.3', linestyle=':', zorder=1)
     
     trend_poly = P.fit(period_times[valid_period_inxs], valid_periods, 1)
-    trendline, = ax_p.plot(data.times, trend_poly(data.times), 'C00', zorder=0.9)
-    trends.append(trend_poly.convert().coef[1])
+    # trendline, = ax_p.plot(data.times, trend_poly(data.times), 'C00', zorder=0.9)
+    # trends.append(trend_poly.convert().coef[1])
     
+    # plot edge crossing periods
+    # data.process.find_peaks(channels='lpfilt_hpfilt', period_percent=0.4, prominence=3)
+    rising, multi_rising = data.process.get_multi_crossings(ch, 'rising', 
+                                                            threshold=5, threshold_var=5, 
+                                                            peak_min_distance=0.4)
+    
+    rr = multi_rising.flat[~np.isnan(multi_rising.flat)].astype(int)
+    ax.plot(data.times.values[rr], data[f'ch{ch}_lpfilt_hpfilt_lpfilt'][rr], '.', c='k', ms=3)
+     
+    # "mrising" for multi-rising edge crossing
+    mrising_out = data.process.get_multi_edge_periods(ch, 'rising',
+                                                    threshold=5, threshold_var=5,
+                                                    peak_min_distance=0.4)
+    mrising_times, mrising_periods, mrising_errors, mrising_ptp = mrising_out
+    ax_p.errorbar(mrising_times, mrising_periods, mrising_ptp, fmt='.', color='C0')
+    
+    # plot mode, mean and trend line for edge periods
+    valid_period_inxs = au.find_valid_periods(mrising_times, mrising_periods, outlier_mode_proportion, passes=2)
+    valid_periods = mrising_periods[valid_period_inxs]
+    period_mean = np.mean(mrising_periods)
+    period_mode = calc_mode(mrising_periods) 
+    modeline = ax_p.axhline(period_mode, color='0.3', linestyle='--', zorder=1)
+    meanline = ax_p.axhline(period_mean, color='0.3', linestyle=':', zorder=1)
+    
+    # plot average periods on the data
+    mrising_indexes = np.asarray([find_point_by_value(data.times.values, tt) for tt in mrising_times-mrising_periods/2])
+    ax.plot(data.times.values[mrising_indexes], data[f'ch{ch}_lpfilt_hpfilt_lpfilt'][mrising_indexes], '.', c='r')
+    
+    trend_poly = P.fit(mrising_times[valid_period_inxs], valid_periods, 1)
+    trendline, = ax_p.plot(data.times, trend_poly(data.times), 'k', zorder=0.9)
+    ax_p.plot(mrising_times[~valid_period_inxs], mrising_periods[~valid_period_inxs], 'xr')
+    
+    trends.append(trend_poly.convert().coef[1])
     modes.append(period_mode)
+
+    if not data.metadata.twochannel:
+        trends.append(trend_poly.convert().coef[1])
+        modes.append(period_mode)
+        break
 
 if hasattr(data.metadata, 'mec_start_sec'):
     for ax in (ax1, ax3, ax2, ax4):
@@ -108,6 +187,75 @@ ax4.set_title(f'Channel 2 period | mode = {modes[1]:.2f} sec')
 ax3.legend(handles=[modeline, meanline, trendline], loc='upper left',
            labels=['mode', 'mean (no outliers)', f'slope={trends[0]*1000:.1f}e3'])
 ax4.legend(handles=[trendline], loc='upper left', labels=[f'slope={trends[1]*1000:.1f}e3'])
+    
+print('Running', data.metadata.file.stem)
+
+
+#%% Baselines
+
+# Load data
+# data_dir = '/media/marcos/DATA/marcos/FloClock_data/data'
+data_dir = '/media/marcos/DATA/marcos/FloClock_data/tiempos_post_diseccion'
+file_inx = 1
+outlier_mode_proportion = 1.8 #1.8 for normal runs
+
+data_files = contenidos(data_dir, filter_ext='.abf')
+
+# data containing relevant intervals
+tpd_file = Path(data_dir) / 'info.xlsx'
+tpd_data = pd.concat(sheet for name, sheet in pd.read_excel(tpd_file, sheet_name=None).items() 
+                     if name in ('large', 'small'))
+tpd_data['registro'] = tpd_data.registro.astype(str)
+tpd_data = tpd_data.set_index('registro')
+
+rec_nr = data_files[file_inx].stem
+interval = tpd_data.loc[rec_nr]['rango_de_minutos'] if rec_nr in tpd_data.index else None
+
+# Process data a bit
+data = au.load_any_data(data_files[file_inx], gauss_filter=False)
+data.process.lowpass_filter(frequency_cutoff=10, keep_og=True)
+data = data.process.downsample()
+data.process.lowpass_filter(frequency_cutoff=2, keep_og=True, channels='lpfilt')
+
+btimes, *baselines = data.process.multi_baseline('lpfilt', drop_quantile=0.3, length=20)
+
+# Plot data and peaks
+fig, (ax1, ax3, ax2, ax4) = plt.subplots(4, 1, figsize=(12, 8), constrained_layout=True, sharex=True, height_ratios=[2,1,2,1])
+
+P = np.polynomial.Polynomial
+for ax, ax_p, ch in zip((ax1, ax2), (ax3, ax4), (1, 2)):
+    
+    # plot timeseries    
+    ax.plot(data.times, data[f'ch{ch}'], color='0.6')
+    ax.plot(data.times, data[f'ch{ch}_lpfilt'])
+    ax.plot(data.times, data[f'ch{ch}_lpfilt_lpfilt'])
+    
+    # plot baseline
+    mininx, minima, fmininx, fminima = data.process.baseline_in_one_channel(data[f'ch{ch}_lpfilt'], drop_quantile=0.3)
+    # ax.plot(data.times.values[mininx], minima, 'k.')
+    # ax.plot(data.times.values[fmininx], fminima, 'r.')
+    
+    ax.plot(btimes, baselines[ch-1], 'o')
+    ax.plot(btimes, baselines[ch-1])
+    
+    # set limits
+    ax.set_xlim(data.times.values[0], data.times.values[-1])
+
+    if not data.metadata.twochannel:
+        break
+
+fig.suptitle(data.metadata.file.stem)
+ax4.set_xlabel('time (s)')
+
+ax1.set_ylabel('mV')
+ax2.set_ylabel('mV')
+ax3.set_ylabel('period (s)')
+ax4.set_ylabel('period (s)')
+
+ax1.set_title('Channel 1')
+ax2.set_title('Channel 2')
+au.make_scalbar(ax2)
+
     
 print('Running', data.metadata.file.stem)
 
@@ -185,6 +333,257 @@ ax.set_ylabel('period (s)')
 # ax3.legend(handles=[modeline, meanline, trendline], loc='upper left',
 #            labels=['mode', 'mean (no outliers)', f'slope={trends[0]*1000:.1f}e3'])
 # ax4.legend(handles=[trendline], loc='upper left', labels=[f'slope={trends[1]*1000:.1f}e3'])
+
+
+#%% Plot all period types (all runs)
+
+# Load data
+# data_dir = '/media/marcos/DATA/marcos/FloClock_data/data'
+data_dir = '/media/marcos/DATA/marcos/FloClock_data/tiempos_post_diseccion'
+file_inx = 80
+outlier_mode_proportion = 1.6 #1.8 for normal runs
+
+data_files = contenidos(data_dir, filter_ext='.abf')
+file = data_files[file_inx]
+print('Running', file.stem)
+
+# data containing relevant intervals
+tpd_file = Path(data_dir) / 'info.xlsx'
+tpd_data = pd.concat(sheet for name, sheet in pd.read_excel(tpd_file, sheet_name=None).items() 
+                     if name in ('large', 'small'))
+tpd_data['registro'] = tpd_data.registro.astype(str)
+tpd_data = tpd_data.set_index('registro')
+
+rec_nr = file.stem
+interval = tpd_data.loc[rec_nr]['rango_de_minutos'] if rec_nr in tpd_data.index else None
+
+# Process data a bit
+data = au.load_any_data(file, gauss_filter=False, interval=interval)
+data.process.lowpass_filter(frequency_cutoff=10, keep_og=False)
+data = data.process.downsample()
+data.process.highpass_filter(frequency_cutoff=0.1, keep_og=False)
+data.process.lowpass_filter(frequency_cutoff=2, keep_og=False)
+
+data.process.find_peaks( period_percent=0.4, prominence=3)
+
+# Plot data and peaks
+
+fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), constrained_layout=True,)
+
+modes = []
+trends = []
+P = np.polynomial.Polynomial
+for ax, ch in zip((ax1, ax2), (1, 2)):
+    period_times, periods = data.process.get_periods(ch)
+    
+    # plot periods
+    valid_period_inxs = au.find_valid_periods(period_times, periods, passes=2)
+    ax.plot(period_times, periods, 'o', color='C02')
+    ax.plot(period_times[~valid_period_inxs], periods[~valid_period_inxs], 'ro')
+    
+    # plot mode, mean and trend line
+    period_mean = np.mean(periods[valid_period_inxs])
+    period_mode = calc_mode(period_times)
+    modeline = ax_p.axhline(period_mode, color='0.3', linestyle='--', zorder=1)
+    meanline = ax_p.axhline(period_mean, color='0.3', linestyle=':', zorder=1)
+    
+    trend_poly = P.fit(period_times[valid_period_inxs], periods[valid_period_inxs], 1)
+    trendline, = ax_p.plot(data.times, trend_poly(data.times), 'C00', zorder=0.9)
+    trends.append(trend_poly.convert().coef[1])
+    
+    modes.append(period_mode)
+    
+    # add period calculated through threshold crossings
+    rising_times, rising_periods = data.process.get_edge_periods(ch, 'rising')
+    falling_times, falling_periods = data.process.get_edge_periods(ch, 'falling')
+    mrising_times, mrising_periods, mrising_errors = data.process.get_multi_edge_periods(1, 'rising', threshold_var=5)
+    
+    # plot edge crossing periods
+    ax.plot(rising_times, rising_periods, 'x', c='C3')
+    ax.plot(falling_times, falling_periods, '*', c='C4')
+    ax.errorbar(mrising_times, mrising_periods, mrising_errors, fmt='.', color='C0')
+
+    if not data.metadata.twochannel:    
+        modes.append(period_mode)
+        break
+
+fig.suptitle(data.metadata.file.stem)
+ax2.set_xlabel('time (s)')
+
+ax1.set_ylabel('period (s)')
+ax2.set_ylabel('period (s)')
+
+ax1.set_title(f'Channel 1: {data.metadata.ch1} | mode = {modes[0]:.2f} sec')
+ax2.set_title(f'Channel 2: {data.metadata.ch2} | mode = {modes[1]:.2f} sec')
+
+
+#%% Get and save all period types (all runs)
+
+# Load data
+# data_dir = '/media/marcos/DATA/marcos/FloClock_data/data'
+data_dir = '/media/marcos/DATA/marcos/FloClock_data/tiempos_post_diseccion'
+output_dir = Path(data_dir) / 'output' / 'frequency_time_dependency'
+tpd_file = Path(data_dir) / 'info.xlsx'
+pair_guide_file = Path(data_dir) / 'par_guide.xlsx' 
+
+# load relevant info
+data_files = contenidos(data_dir, filter_ext='.abf')
+tpd_data = pd.concat(sheet for name, sheet in pd.read_excel(tpd_file, sheet_name=None).items())
+                      # if name not in ('large', 'small'))
+# tpd_data = pd.concat(pd.read_excel(tpd_file, sheet_name=None).values())
+pair_guide = pd.read_excel(pair_guide_file)
+
+# set rec names to string
+tpd_data['registro'] = tpd_data.registro.astype(str)
+tpd_data = tpd_data.set_index('registro')
+
+pair_guide['rec'] = pair_guide.rec.astype(str)
+pair_guide = pair_guide.set_index('rec')
+
+output_info = {'name':[], 'type':[], 'ch':[], 'rec':[], 'og_name':[], 
+               'tpd':[], 'duration':[], 'time_hours':[]}
+
+data_files = data_files[40:]
+# data_files = [f for f in data_files if f.stem in ['23602001', '23615000', '23615003']]
+for i, file in enumerate(data_files):
+    print('Running', f'{i+1}/{len(data_files)}:', file.stem, end='. ')
+    
+    # Get tpd
+    rec_nr = file.stem
+
+    if rec_nr not in tpd_data.index:# or pair_guide.loc[file.stem].par =='single':
+        print('No tpd info available. Skipping...')
+        continue
+    else:
+        print()
+    tpd = tpd_data.loc[rec_nr]['tiempo_post_diseccion (mins)'] # in minutes
+        
+    # data containing relevant intervals
+    rec_nr = file.stem
+    interval = tpd_data.loc[rec_nr]['rango_de_minutos'] if rec_nr in tpd_data.index else None
+    
+    # Process data a bit
+    data = au.load_any_data(file, gauss_filter=False, interval=interval)
+    data.process.lowpass_filter(frequency_cutoff=10, keep_og=False)
+    data = data.process.downsample()
+    data.process.highpass_filter(frequency_cutoff=0.1, keep_og=False)
+    data.process.lowpass_filter(frequency_cutoff=2, keep_og=False)
+    
+    data.process.find_peaks( period_percent=0.4, prominence=3)
+    
+    # Plot data and peaks
+    for ch in (1, 2):
+                
+        cell_type = getattr(data.metadata, f'ch{ch}')
+        if cell_type == 'R':
+            continue
+        
+        period_times, periods = data.process.get_periods(ch)
+            
+        # add period calculated through threshold crossings
+        falling_times, falling_periods = data.process.get_edge_periods(ch, 'falling')
+        mrising_out = data.process.get_multi_edge_periods(ch, 'rising', threshold=5, threshold_var=5)
+        mrising_times, mrising_periods, mrising_errors, mrising_ptp = mrising_out
+        
+        new_name = data.metadata.file.stem + f'_ch{ch}'
+        np.savez(output_dir / new_name,
+                  times_peaks = period_times,
+                  periods_peaks = periods,
+                  falling_times = falling_times,
+                  falling_periods = falling_periods,
+                  rising_times  = mrising_times,
+                  rising_periods = mrising_periods, 
+                  rising_std = mrising_errors,
+                  rising_ptp = mrising_ptp,
+                  
+                  # set mrising periods as the default one to use (mor disck space, but it's still never a lot)
+                  times = mrising_times,
+                  periods = mrising_periods,
+                  
+                  )
+        
+        output_info['name'].append(new_name)
+        output_info['type'].append(cell_type)
+        output_info['ch'].append(ch)
+        output_info['rec'].append(rec_nr)
+        output_info['og_name'].append(data.metadata.file.stem)
+        output_info['tpd'].append(tpd)
+        output_info['duration'].append(data.metadata.duration_min)
+        output_info['time_hours'].append(data.metadata.rec_datetime.hour + data.metadata.rec_datetime.minute/60)
+        
+        if not data.metadata.twochannel:    
+            break
+
+output_info_df = pd.DataFrame(output_info)
+output_info_df.to_csv(output_dir / 'periods_info4.csv', index=False)
+
+
+#%% Get and save baselines (all runs)
+
+# Load data
+# data_dir = '/media/marcos/DATA/marcos/FloClock_data/data'
+data_dir = '/media/marcos/DATA/marcos/FloClock_data/tiempos_post_diseccion'
+output_dir = Path(data_dir) / 'output' / 'baseline_time_dependency'
+tpd_file = Path(data_dir) / 'info.xlsx'
+pair_guide_file = Path(data_dir) / 'par_guide.xlsx' 
+
+# load relevant info
+data_files = contenidos(data_dir, filter_ext='.abf')
+tpd_data = pd.concat(sheet for name, sheet in pd.read_excel(tpd_file, sheet_name=None).items())
+                      # if name not in ('large', 'small'))
+# tpd_data = pd.concat(pd.read_excel(tpd_file, sheet_name=None).values())
+pair_guide = pd.read_excel(pair_guide_file)
+
+# set rec names to string
+tpd_data['registro'] = tpd_data.registro.astype(str)
+tpd_data = tpd_data.set_index('registro')
+
+pair_guide['rec'] = pair_guide.rec.astype(str)
+pair_guide = pair_guide.set_index('rec')
+
+data_files = data_files[80:]
+for i, file in enumerate(data_files):
+    print('Running', f'{i+1}/{len(data_files)}:', file.stem, end='. ')
+    
+    # Get tpd
+    rec_nr = file.stem
+
+    if rec_nr not in tpd_data.index:# or pair_guide.loc[file.stem].par =='single':
+        print('No tpd info available. Skipping...')
+        continue
+    else:
+        print()
+    
+    # data containing relevant intervals
+    rec_nr = file.stem
+    interval = tpd_data.loc[rec_nr]['rango_de_minutos'] if rec_nr in tpd_data.index else None
+    
+    # Process data a bit
+    data = au.load_any_data(file, gauss_filter=False, interval=interval)
+    data.process.lowpass_filter(frequency_cutoff=10, keep_og=False)
+    data = data.process.downsample()
+        
+    btimes, *baselines = data.process.multi_baseline(drop_quantile=0.3, length=20)
+
+    # Save the relevant data (one or two channels)
+    for ch in (1, 2):
+                
+        cell_type = getattr(data.metadata, f'ch{ch}')
+        if cell_type == 'R':
+            continue
+        
+        new_name = data.metadata.file.stem + f'_ch{ch}'
+        np.savez(output_dir / new_name,
+                  btimes = btimes,
+                  baselines = baselines[ch-1]
+                  )
+    
+        if not data.metadata.twochannel:    
+            break
+
+# output_info_df = pd.DataFrame(output_info)
+# output_info_df.to_csv(output_dir / 'periods_info1.csv', index=False)
+
 
 #%% Get and save time dependent periods (dual channel runs)
 
@@ -438,13 +837,13 @@ for file in files[i:i+1]:
 data_dir = '/media/marcos/DATA/marcos/FloClock_data/tiempos_post_diseccion'
 data_dir = Path(data_dir) / 'output' / 'frequency_time_dependency'
 
-outlier_mode_proportion = 1.6 #1.8 for normal runs
+outlier_mode_proportion = 1.8 #1.8 for normal runs
 
 info_dir = data_dir / 'periods_info.csv'
 data_files = contenidos(data_dir, filter_ext='.npz')
 
 # load info
-info = pd.read_csv(info_dir).set_index('name')
+info = pd.read_csv(info_dir).sort_values('name').set_index('name')
 
 # add tpd in seconds
 info['tpd_sec'] = info.tpd * 60
@@ -469,6 +868,7 @@ times_valid = []
 times_tpd_valid = []
 periods_valid = []
 tpds = []
+durations = []
 for file, c in zip(data_files, color_list):
     # load data
     data = np.load(file)
@@ -476,18 +876,24 @@ for file, c in zip(data_files, color_list):
     p = data['periods']
     tpd = info.loc[file.stem].tpd
     
+    durations.append(t[-1])
+    small = info.loc[file.stem]['type'] == 'S'
+    if not small:
+        continue
+    
     # plot points
     ax1.plot(t, p, '.', c=c)
     ax2.plot(t+tpd, p, '.', c=c)
     
     # plot trend lines
-    period_mode = calc_mode(p)
-    valid_indexes = p <= (period_mode * outlier_mode_proportion)
+    # period_mode = calc_mode(p)
+    # valid_indexes = p <= (period_mode * outlier_mode_proportion)
+    valid_indexes = au.find_valid_periods(t, p, outlier_mode_proportion, passes=2)
     trend_poly = P.fit(t[valid_indexes], p[valid_indexes], 1)
     
-    # c = 'r' if trend_poly.convert().coef[1]>0 else 'b'
-    if trend_poly.convert().coef[1]<0: 
-        print(file.stem, 'has slope', f'{trend_poly.convert().coef[1]:.1e}')
+    # # c = 'r' if trend_poly.convert().coef[1]>0 else 'b'
+    # if trend_poly.convert().coef[1]<0: 
+    #     print(file.stem, 'has slope', f'{trend_poly.convert().coef[1]:.1e}')
     
     ax3.plot(t, trend_poly(t), c=c)
     ax4.plot(t+tpd, trend_poly(t), c=c)
@@ -502,6 +908,13 @@ for file, c in zip(data_files, color_list):
     periods_valid.extend(p[valid_indexes])
     times_tpd_valid.extend(t[valid_indexes]+tpd)
     
+    
+durations_df = pd.DataFrame({'duration':durations, 
+                             'name':list(data_files.stems())}).sort_values('name').set_index('name')
+
+info['duration'] = durations_df.duration
+
+
 # Add local variability
 def calc_variability(t, x, step=20):
     """ Calculte the local variability of data in windows of size "step", in 
@@ -558,6 +971,8 @@ trend_poly = P.fit(times_tpd, periods, 1)
 label = f'mse = {mse(periods, trend_poly(times_tpd)):.2f}'
 ax2.plot(times_tpd, trend_poly(times_tpd), c='k', label=label)
 
+times_all = times_tpd
+periods_all = periods
 
 # make fit for "valid" data (under a threshold)
 times = np.asarray(times_valid)
@@ -608,19 +1023,81 @@ ax2.legend(title=f'$r_{{perason}}$ = {pearson_tpd:.2f}')
 right before this one. It plots only the valid periods for the run aligned at
 the right tpd and fits a line."""
 
-fig, ax = plt.subplots(constrained_layout=True, figsize=[6.4, 3.3])
+# fig_main = plt.figure(constrained_layout=True, figsize=[9.8, 5.6])
+# fig, fig2 = fig_main.subfigures(2,1, height_ratios=[4,1])
+# axarr = fig.subplots(2, 1, sharex=True, sharey=True)
+# (axl, axlh) = fig2.subplots(1,2, sharey=True, width_ratios=[5,1])
+                          
+# (ax, axh) = axarr
+VALID = True
+upper_value = 7
 
-ax.plot(times_tpd, periods, '.', rasterized=True)
-trend_poly = P.fit(times_tpd, periods, 1)
-ax.plot(times_tpd, trend_poly(times_tpd), '--k')
+if VALID:
+    this_periods, this_times = periods, times_tpd
+else:
+    this_periods, this_times = periods_all.copy(), times_all.copy()
+    this_times = this_times[this_periods<=upper_value]
+    this_periods = this_periods[this_periods<=upper_value]
+    
+fig, axarr = plt.subplots(3,2, constrained_layout=True, figsize=[9.8, 4.8],
+                   sharex='col', sharey='row', width_ratios=[5,1])
+(ax, axh, axl) = axarr[:, 0]
+axbar = axarr[0:2, 1]
+axlh = axarr[2, 1]
 
-ax.set_xlabel('time relative to tpd [min]')
+# scatter plot
+ax.plot(this_times, this_periods, '.', rasterized=True, c=[191/255,  62/255, 128/255])
+trend_poly = P.fit(this_times, this_periods, 1)
+ax.plot(this_times, trend_poly(this_times), '--k')
+
+# 2D histogram
+colors_keypoints = [
+    (0,   [191,  62, 128]),
+    # (0.4, [205, 102, 102]),
+    (1,   [241, 199,  43]),
+    ]
+
+cmap = colors.LinearSegmentedColormap.from_list('custom_colormap', [(i, [x/255 for x in c]) for i, c in colors_keypoints])
+
+# cmap = cm.viridis.with_extremes(under='w')
+*_, hi = axh.hist2d(this_times, this_periods, bins=[200, 50], cmin=0.5, 
+                    rasterized=True, cmap=cmap)
+# axh.plot(this_times, trend_poly(this_times), '--r')
+
+plt.colorbar(hi, ax=axbar, orientation='vertical', label='point count')
+
+for axi in axbar:
+    clear_frame(axi)
+
+# plot durations
+info.sort_values('duration', inplace=True)
+valid = info.type=='S'
+for i, (tpd, dur) in enzip(info[valid].tpd, info[valid].duration):
+# for i, (tpd, dur) in enzip(info[:].tpd, info[:].duration):
+    # axl.plot([tpd, tpd+dur], [dur, dur], '0.3')
+    axl.plot([tpd, tpd+dur], [i, i], '0.3')
+
+axlh.hist(info.duration, bins='auto', orientation='vertical')
+
+# Format and stuff
+pearson_tpd, _ = stats.pearsonr(this_times, this_periods)
+mse_val = mse(this_periods, trend_poly(this_times))
+slope = trend_poly.convert().coef[1]
+_, cov = np.polyfit(this_times, this_periods, deg=1, cov='unscaled')
+slope_err = np.sqrt(cov[0, 0])
+
+axl.set_xlabel('time relative to tpd [min]')
+axh.set_ylabel('period [s]')
 ax.set_ylabel('period [s]')
+axl.set_ylabel('duration [min]')
 
-pearson_tpd, _ = stats.pearsonr(times_tpd, periods)
-mse_val = mse(periods, trend_poly(times_tpd))
+ax.legend(handles=[], title = f'$r_{{pearson}}$ = {pearson_tpd:.2f}\nmse={mse_val:.2f}\nslope={slope:.3f}±{slope_err:.3f}')
 
-ax.legend(handles=[], title = f'$r_{{pearson}}$ = {pearson_tpd:.2f}\nmse={mse_val:.2f}')
+# axlh.set_xlim(0, 40)
+axh.set_ylim(0, upper_value)
+# ax.set_ylim(0, 7)
+ax.set_ylim(axh.get_ylim())
+
 
 #%% Save all individual runs
 
@@ -651,15 +1128,18 @@ color_list = cm.viridis([norm(info.loc[file.stem].time_hours) for file in data_f
 P = np.polynomial.Polynomial
 times_tpd = []
 periods = []
+period_errs = []
 times_valid = []
 times_tpd_valid = []
 periods_valid = []
+period_errs_valid = []
 tpds = []
 for file, c in zip(data_files, color_list):
     # load data
     data = np.load(file)
     t = data['times'] / 60
     p = data['periods']
+    dp = data['rising_std']
     tpd = info.loc[file.stem].tpd
     
     # plot points
@@ -672,11 +1152,13 @@ for file, c in zip(data_files, color_list):
     
     # append data to lists
     periods.extend(p)
+    period_errs.extend(dp)
     times_tpd.extend(t+tpd)
     tpds.append(tpd)
     
     times_valid.extend(t[valid_indexes])
     periods_valid.extend(p[valid_indexes])
+    period_errs_valid.extend(dp[valid_indexes])
     times_tpd_valid.extend(t[valid_indexes]+tpd)
     
 def mse(y, y_fit):
@@ -686,16 +1168,18 @@ def mse(y, y_fit):
 # plot fit for all data
 times_tpd = np.asarray(times_tpd)
 periods = np.asarray(periods)
+period_errs = np.asarray(period_errs)
 
-trend_poly = P.fit(times_tpd, periods, 1)
+trend_poly = P.fit(times_tpd, periods, deg=1, w=1/period_errs**2)
 label = f'mse = {mse(periods, trend_poly(times_tpd)):.2f}'
 ax2.plot(times_tpd, trend_poly(times_tpd), c='k', label=label)
 
 # make fit for "valid" data (under a threshold)
 times_tpd = np.asarray(times_tpd_valid)
 periods = np.asarray(periods_valid)
+period_errs = np.asarray(period_errs_valid)
 
-trend_poly = P.fit(times_tpd, periods, 1)
+trend_poly = P.fit(times_tpd, periods, deg=1, w=1/period_errs**2)
 label = f'mse = {mse(periods, trend_poly(times_tpd)):.2f}'
 ax2.plot(times_tpd, trend_poly(times_tpd), '--', c='k', label=label)
 
@@ -775,9 +1259,10 @@ info['tpd_sec'] = info.tpd * 60
 # color_list = cm.jet(np.linspace(0, 1, len(data_files)+1))[1:]
 
 initial_periods = []
+initial_periods_error = []
 tpds = []
 daytime = []
-celltype = []
+issmall = []
 for file, c in zip(data_files, color_list):
     # load data
     data = np.load(file)
@@ -785,19 +1270,24 @@ for file, c in zip(data_files, color_list):
     p = data['periods']
     tpd = info.loc[file.stem].tpd
     time_hours = info.loc[file.stem].time_hours
-    ctype = info.loc[file.stem]['type'] == 'S'
+    small = info.loc[file.stem]['type'] == 'S'
     
-    initial_periods.append(np.mean(p[:40]))
+    ip = np.mean(p[:40])
+    if ip > 5:
+        continue
+    initial_periods.append(ip)
+    initial_periods_error.append(np.std(p[:40]))
     tpds.append(tpd)
     daytime.append(time_hours)
-    celltype.append(ctype)
+    issmall.append(small)
 
 tpds = np.asarray(tpds)
 initial_periods = np.asarray(initial_periods)
-celltype = np.asarray(celltype)
+initial_periods_error = np.asarray(initial_periods_error)
+issmall = np.asarray(issmall)
 
 # plot    
-fig, (ax1, ax2) = plt.subplots(1,2, figsize=(12, 5), constrained_layout=True)
+fig, (ax1, ax2) = plt.subplots(1,2, figsize=(12, 3), constrained_layout=True)
 
 # ax1
 sc = ax1.scatter(tpds, initial_periods, c=daytime)
@@ -806,26 +1296,50 @@ ax1.set_ylabel('initial period [sec]')
 cbar = plt.colorbar(sc, label='time of day [hours]')
 
 # trend line
-trend = np.polynomial.Polynomial.fit(tpds, initial_periods, 1)
+trend = np.polynomial.Polynomial.fit(tpds, initial_periods, deg=1, w=1/initial_periods_error**2)
 pearson, _ = stats.pearsonr(tpds, initial_periods)
+slope = trend.convert().coef[1]
+_, cov = np.polyfit(tpds, initial_periods, deg=1, cov='unscaled')
+slope_err = np.sqrt(cov[0, 0])
+fit_error = au.linear_fit_error(tpds, initial_periods_error.mean())
 
-ax1.plot(tpds, trend(tpds), 'k', label=f'$r_{{pearson}}$ = {pearson:.2f}')
+# small trend
+small_trend = np.polynomial.Polynomial.fit(tpds[issmall], initial_periods[issmall], deg=1, w=1/initial_periods_error[issmall]**2)
+small_slope = small_trend.convert().coef[1]
+_, cov = np.polyfit(tpds[issmall], initial_periods[issmall], deg=1, w=1/initial_periods_error[issmall]**2, cov='unscaled')
+small_slope_err = np.sqrt(cov[0, 0])
+
+# large trend
+large_trend = np.polynomial.Polynomial.fit(tpds[~issmall], initial_periods[~issmall], deg=1, w=1/initial_periods_error[~issmall]**2)
+large_slope = large_trend.convert().coef[1]
+_, cov = np.polyfit(tpds[~issmall], initial_periods[~issmall], w=1/initial_periods_error[~issmall]**2, deg=1, cov='unscaled')
+large_slope_err = np.sqrt(cov[0, 0])
+
+
+ax1.plot(tpds, trend(tpds), 'k', label=f'slope = {slope:.3f}±{slope_err:.3f}')
 ax1.legend(loc='lower right')
 
 # ax2
-# ax2.scatter(tpds, initial_periods, c=celltype, cmap='cool')
-ax2.plot(tpds[celltype], initial_periods[celltype], 'o', label='small')
-ax2.plot(tpds[~celltype], initial_periods[~celltype], 'o', label='large')
+# ax2.scatter(tpds, initial_periods, c=issmall, cmap='cool')
+ax2.errorbar(tpds[issmall], initial_periods[issmall], initial_periods_error[issmall], 
+             fmt='o', label='small')
+ax2.errorbar(tpds[~issmall], initial_periods[~issmall], initial_periods_error[~issmall], 
+             fmt='o', label='large')
 ax2.set_xlabel('time since disection [sec]')
 ax2.set_ylabel('initial period [sec]')
 
 # trend line
-trend = np.polynomial.Polynomial.fit(tpds, initial_periods, 1)
-pearson, _ = stats.pearsonr(tpds, initial_periods)
+# line_time = np.linspace(min(tpds), max(tpds), 200)
+line_time = np.linspace(min(tpds), max(tpds), 200)
+ax2.plot(line_time, trend(line_time), 'k', label=f'$r_{{pearson}}$ = {pearson:.2f}')
+ax2.plot(line_time, trend(line_time) + fit_error(line_time), '--k', lw=0.5)
+ax2.plot(line_time, trend(line_time) - fit_error(line_time), '--k', lw=0.5)
 
-ax2.plot(tpds, trend(tpds), 'k', label=f'$r_{{pearson}}$ = {pearson:.2f}')
+ax2.plot(line_time, small_trend(line_time), 'C0')
+ax2.plot(line_time, large_trend(line_time), 'C1')
+
 ax2.legend(loc='lower right')
-
+ax2.set_ylim(ax1.get_ylim())
 
 #%% Plot initial period as a function of TOD
 
@@ -833,11 +1347,14 @@ ax2.legend(loc='lower right')
 its TPD, so you need to run the previous cell before this one"""
 
 detrended_periods = np.asarray(initial_periods)# - trend(np.asarray(tpds))
+daytime = np.asarray(daytime)
 
 plt.figure()
-plt.plot(daytime, detrended_periods,'.')
+plt.errorbar(daytime[issmall], detrended_periods[issmall], initial_periods_error[issmall], fmt='.', label='small')
+plt.errorbar(daytime[~issmall], detrended_periods[~issmall], initial_periods_error[~issmall], fmt='.', label='large')
 plt.xlabel('time of day [hours]')
 plt.ylabel('period (normalized) [sec]')
+plt.legend()
 
 #%% Create 2d plot with TOD and TPD
 
@@ -1520,34 +2037,38 @@ data_files = contenidos(data_dir, filter_ext='.npz')
 
 # load info
 info = pd.read_csv(info_dir).set_index('name')
+info = info.drop(columns='duration')
 
 # load and plot data
 P = np.polynomial.Polynomial
 slopes = []
 slopes_valid = []
+slopes_valid_err = []
 durations = []
 for file in data_files:
     # load data
     data = np.load(file)
     t = data['times']
     p = data['periods']
-    tpd = info.loc[file.stem].tpd
+    tpd = info.loc[file.stem].tpd 
+    t /= 60
     
     # fit trendlines
-    period_mode = calc_mode(p)
-    valid_indexes = p <= (period_mode * outlier_mode_proportion)
-    
+    valid_indexes = au.find_valid_periods(t, p, passes=2)
     trend_poly = P.fit(t, p, 1)
     trend_poly_valid = P.fit(t[valid_indexes], p[valid_indexes], 1)
-    
+
+    _, cov = np.polyfit(t[valid_indexes], p[valid_indexes], deg=1, cov='unscaled')
+    slope_err = np.sqrt(cov[0, 0])
+
     # append data to lists
-    
-    slopes.append(trend_poly.convert().coef[1])    
+    slopes.append(trend_poly.convert().coef[1])
     slopes_valid.append(trend_poly_valid.convert().coef[1])
-    durations.append(t[-1]/60)
+    slopes_valid_err.append(slope_err)
+    durations.append(t[-1])
     
 # put data into dataframe
-slope_df = pd.DataFrame({'slope':slopes, 'slope_valid':slopes_valid, 'duration':durations},
+slope_df = pd.DataFrame({'slope':slopes, 'slope_valid':slopes_valid, 'slope_err':slopes_valid_err, 'duration':durations},
                         index=pd.Index(data_files.stems(), name='name'))
 info = pd.concat([info, slope_df], axis='columns').sort_values('slope_valid')
 
@@ -1561,30 +2082,39 @@ left = ax1, ax2
 
 # find single channel recordings
 single_channel_recs = np.asarray([len(str(name))>2 for name in info.og_name.values])
+sLNv_recs = np.asarray([ 'S' == info.loc[file].type for file in data_files.stems() ])
 
 # slope histograms
-ax1.hist(slopes, bins='auto', orientation='horizontal', fc='0.6')
-ax2.hist(slopes_valid, bins='auto', orientation='horizontal', fc='0.6')
+binning = np.linspace(-0.4, 0.4, 15)
+ax1.hist(slopes, bins=binning, orientation='horizontal', fc='0.6')
+ax2.hist(slopes_valid, bins=binning, orientation='horizontal', fc='0.6')
+ax2.hist(info.slope_valid[~sLNv_recs], bins=binning, orientation='horizontal', fc=lcolor, alpha=0.5)
+ax2.hist(info.slope_valid[sLNv_recs], bins=binning, orientation='horizontal', fc=scolor, alpha=0.5)
+
 
 # slope vs duration
-ax3.plot(info.duration[~single_channel_recs], info.slope[~single_channel_recs], '.')
-ax4.plot(info.duration[~single_channel_recs], info.slope_valid[~single_channel_recs], '.', label='dual channel')
+ax3.plot(info.duration[~sLNv_recs], info.slope[~sLNv_recs], '.', c=lcolor)
+ax4.plot(info.duration[~sLNv_recs], info.slope_valid[~sLNv_recs], '.', label='lLNvs', c=lcolor)
 
-# color the sigle channel recordings differently
-ax3.plot(info.duration[single_channel_recs], info.slope[single_channel_recs], '.')
-ax4.plot(info.duration[single_channel_recs], info.slope_valid[single_channel_recs], '.', label='single channel')
+# color small LNvs differently
+ax3.plot(info.duration[sLNv_recs], info.slope[sLNv_recs], '.', c=scolor)
+ax4.plot(info.duration[sLNv_recs], info.slope_valid[sLNv_recs], '.', label='sLNvs', c=scolor)
 
 # slope vs tpd
-ax5.plot(info.tpd[~single_channel_recs], info.slope[~single_channel_recs], '.')
-ax6.plot(info.tpd[~single_channel_recs], info.slope_valid[~single_channel_recs], '.')
+ax5.plot(info.tpd[~sLNv_recs], info.slope[~sLNv_recs], '.', c=lcolor)
+ax6.errorbar(info.tpd[~sLNv_recs], info.slope_valid[~sLNv_recs], info.slope_err[~sLNv_recs], fmt='.', c=lcolor)
+avg = np.average(info.slope_valid[~sLNv_recs], weights=1/info.slope_err[~sLNv_recs]**2)
+avg_err = np.sqrt(1 / np.sum( 1/info.slope_err[~sLNv_recs]**2 ))
+ax6.axhline(avg, c=lcolor, label=f'{avg:.3f}±{avg_err:.3f}')
 
 # color the sigle channel recordings differently
-ax5.plot(info.tpd[single_channel_recs], info.slope[single_channel_recs], '.')
-ax6.plot(info.tpd[single_channel_recs], info.slope_valid[single_channel_recs], '.')
-
+ax5.plot(info.tpd[sLNv_recs], info.slope[sLNv_recs], '.', c=scolor)
+ax6.errorbar(info.tpd[sLNv_recs], info.slope_valid[sLNv_recs], info.slope_err[sLNv_recs], fmt='.', c=scolor)
+avg = np.average(info.slope_valid[sLNv_recs], weights=1/info.slope_err[sLNv_recs]**2)
+ax6.axhline(avg, c=scolor, label=f'{avg:.3f}±{avg_err:.3f}')
 
 for ax in left:
-    ax.set_ylabel('slope')
+    ax.set_ylabel('slope [sec/min]')
 
 ax2.set_xlabel('counts')
 ax4.set_xlabel('duration of rec. [min]')
@@ -1593,6 +2123,7 @@ ax6.set_xlabel('tpd [min]')
 ax3.set_title('All periods')
 ax4.set_title('"Valid" periods only')
 ax4.legend() 
+ax6.legend(title='Weighted avg.\nslope [sec/min]')
 
 for ax in (*top, *bot):
     ax.grid(axis='y')
@@ -1619,7 +2150,7 @@ for name, line in info.iloc[:count].iterrows():
     index = rec_files.index(line.rec)
     cprint(f'\t&lc {index}&s : {name} ({line.slope:.5f})')
     
-
+ax6.set_ylim(-0.3, 0.3)
 #%% Study variability around the global slope
 
 """ Plot the standard deviation of the points in a run (as a measure of noise),
@@ -1802,7 +2333,8 @@ fig.legend(lines, outlier_mode_proportions, ncols=len(outlier_mode_proportions),
 data_dir = '/media/marcos/DATA/marcos/FloClock_data/tiempos_post_diseccion'
 data_dir = Path(data_dir) / 'output' / 'frequency_time_dependency'
 
-outlier_mode_proportion = 1.6 #1.8 for normal runs
+outlier_mode_proportion = 1.8 #1.8 for normal runs
+KIND = 'L'  # 'L', 'S', or None
 
 info_dir = data_dir / 'periods_info.csv'
 data_files = contenidos(data_dir, filter_ext='.npz')
@@ -1827,14 +2359,19 @@ periods = []
 times_norm = []
 durations = []
 for file in data_files:
+    
+    if KIND is not None and info.loc[file.stem].type != KIND:
+        continue
+    
     # load data
     data = np.load(file)
     t = data['times'] / 60
     p = data['periods']
     
     # plot trend lines
-    period_mode = calc_mode(p)
-    valid = p <= (period_mode * outlier_mode_proportion)
+    valid = au.find_valid_periods(t, p, passes=2)
+    # period_mode = calc_mode(p)
+    # valid = p <= (period_mode * outlier_mode_proportion)
     trend_poly = P.fit(t[valid], p[valid], 1)
     
     t_norm = t / t[-1] # this (correctly) assumes t[0] = 0
@@ -1907,4 +2444,79 @@ ax5.set_ylabel('Period counts per bin')
 
 ax1.set_title('Runs aligned at the beginning of the recording')
 ax2.set_title('Time of each run normalized to [0,1]')
-fig.suptitle('Proportion of valid periods as time advances, by binning the time', fontsize=14)
+
+suptitle = 'Proportion of valid periods as time advances' + ('' if KIND is None else f' ({KIND} only)')
+fig.suptitle(suptitle, fontsize=14)
+
+ax1.set_ylim(0, 20)
+ax3.set_ylim(0, 1.05)
+
+
+#%% Quantify baselines
+
+data_dir = '/media/marcos/DATA/marcos/FloClock_data/tiempos_post_diseccion'
+data_dir = Path(data_dir) / 'output' / 'baseline_time_dependency'
+
+info_dir = data_dir / 'baselines_info.csv'
+data_files = contenidos(data_dir, filter_ext='.npz')
+
+# load info
+info = pd.read_csv(info_dir).sort_values('name').set_index('name')
+
+# add tpd in seconds
+info['tpd_sec'] = info.tpd * 60
+
+
+fig, (ax1, ax2, axh) = plt.subplots(1, 3, constrained_layout=True, 
+                                    figsize=[12, 3.2],
+                                    width_ratios=[1, 1.6, 0.4], sharey=True)
+mean_baseline = []
+stimes, sbaselines = [], []
+ltimes, lbaselines = [], []
+for file in data_files:
+    loaded = np.load(file)
+    
+    mean_baseline.append(loaded['baselines'].mean())
+    times = loaded['btimes']/60 + tpd
+    baselines = loaded['baselines']
+    
+    times = times[baselines < -20]
+    baselines = baselines[baselines < -20]
+    
+    tpd = info.loc[file.stem].tpd
+    if info.loc[file.stem].type=='S':
+        stimes.extend(times)
+        sbaselines.extend(baselines)
+    else:
+        ltimes.extend(times)
+        lbaselines.extend(baselines)
+    
+    thecolor = scolor if info.loc[file.stem].type=='S' else lcolor
+    thezorder = 2 if info.loc[file.stem].type=='S' else 1.9
+    ax2.plot(times, baselines, c=thecolor, zorder=thezorder)
+    
+info['baseline'] = mean_baseline
+
+colors_list = [scolor if row.type=='S' else lcolor for _, row in info.iterrows()]
+ax1.scatter(info.tpd + info.duration/2, info.baseline, c=colors_list)
+
+# ax2.plot(ltimes, lbaselines,  c=lcolor, label='L', rasterized=True)
+# ax2.plot(stimes, sbaselines,  c=scolor, label='S', rasterized=True)
+
+axh.hist([*sbaselines, *lbaselines], bins='auto', fc='0.6', orientation='horizontal')    
+axh.hist(lbaselines, bins='auto', fc=lcolor, orientation='horizontal', alpha=0.4)
+axh.hist(sbaselines, bins='auto', fc=scolor, orientation='horizontal', alpha=0.4)
+
+
+# format plots
+ax1.set_xlabel('tpd [min]')
+ax1.set_title('Avearge baseline')
+ax1.grid()
+
+ax2.set_xlabel('tpd [min]')
+ax2.set_title('Local baseline over time')
+ax2.grid()
+
+axh.set_xlabel('# counts')
+axh.set_title('Distribution of baselines\n(data over time)')
+axh.grid()

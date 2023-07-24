@@ -8,7 +8,7 @@ Created on Tue Jan  3 15:35:04 2023
 
 # from pathlib import Path
 import re
-import itertools
+import itertools, numbers
 
 import numpy as np
 from scipy import signal, interpolate, stats
@@ -42,6 +42,8 @@ class RunInfo:
         self._pair = guide_info['par']
         self._raw_sampling_rate = guide_info['samplerate']
         self._duration_min = guide_info['duration(min)'] # this is the duration in minutes, encoded like this because namedtuples
+        self._twochannel = True
+        self.interval = None
         
         if 'mec_start' in guide_info:
             self._mec_start_sec = guide_info['mec_start(sec)']
@@ -69,9 +71,10 @@ class RunInfo:
     @property
     def comment(self):
         return self._comment
-    # @twochannel
-    # def twochannel():
-    #     return self._twochannel
+    @property
+    def twochannel(self):
+        return self._twochannel
+
 
 @pd.api.extensions.register_dataframe_accessor("process")
 class Processors:
@@ -314,18 +317,159 @@ class Processors:
                                    
             else:
                 # find falling edge point (after peak)    
-                starting_point = min(peak + int(mean_period_in_points / 2), len(data))
+                starting_point = min(peak + int(mean_period_in_points * peak_min_distance), len(data))
                 interval = data[:starting_point]
                 cross = np.nonzero(interval > threshold)[0][-1]
             
             crossings.append(cross)
             prev_peak = peak
         
-        if not crossings: # no peaks were found overthe threshold
+        if not crossings: # no peaks were found over the threshold
             raise ValueError(f"It's likely no peaks were found over the given threshold value of {threshold}. Or maybe something else is wrong. Are you sure you have peaks?")
 
         crossings = np.asarray(crossings)
         return crossings
+    
+    
+    def get_multi_crossings(self, inx, edge, threshold=5, threshold_var=3, peak_min_distance=0.5, channels=None):
+        """
+        Calculate the point at which the signal crosses the threshold at each
+        rising edge or each falling edge, depending on the value of 'edge'.
+
+        Parameters
+        ----------
+        inx : int
+            1 or 2, the channel for which periods are being calculated.
+        edge : str
+            either 'falling' or 'rising'. The kind of edge for which the period
+            is calculated. If kind='rising', the function will look for a rising
+            edge crossing before the peak. If kind='falling', the crossing will
+            happen after the peak.
+        threshold : float, optional
+            Value of the threshold at which the crossing is calculated. 
+            Additionally, if a peak value falls under the threshold, that peak
+            is ignored. The default is 5, which assumes the data has been 
+            detrended.
+        threshold_var : floar, optional
+            Value by which the threshold will be upwards and downwards to find 
+            further corssings. The default is 3.
+        peak_min_distance : floar, optional
+            The minimum distance between peaks, in units of average distance
+            between peaks. After one peak is used, any subsequent peaks closer
+            than this value will be ignored. The default is 0.5.
+
+        Returns
+        -------
+        crossings : numpy array
+            Array containing indexes at which the requested crossings happen
+        """
+        
+        
+        assert edge in ('rising', 'falling'), 'edge must be one of "rising" or "falling"'
+        assert inx in (1,2), 'inx must be either 1 or 2'
+        assert 'findpeaks' in self.steps, 'You must find peaks first'
+        
+        # check if findpeaks was done on the requested channel (for example, gauss_filt)
+        # if not, warn and continue
+        if channels is not None and not self._check_if_action_was_performed_on_channel('findepakes', channels):
+            print('WARNING: findpeaks was not performed on this channel')
+        
+        # default to using the channel on which findpeaks was performed
+        if channels is None: 
+            channels = self.get_step_info('findpeaks')['channels']
+        ch_pair = self._get_channels(channels)
+        data = ch_pair[inx-1].values
+        
+        # retrieve peak data
+        peaks = self.peaks[inx-1]
+        mean_period_in_points = round(np.mean(np.diff(peaks)))
+        
+        crossings = []
+        other_crossings = []
+        prev_peak = -np.inf # to prime the first peak
+        multiple_thresholds = np.linspace(0, threshold_var, 11)[1:]
+        # iterate over all peaks
+        for peak in peaks:
+            
+            # skip maxima that are too low
+            if data[peak] < threshold:
+                continue
+             
+             # skip maxima that are too close together
+            if peak - prev_peak < mean_period_in_points * peak_min_distance:
+                continue
+            
+            this_other_crossings = []
+            if edge == 'rising':
+                # find rising edge point (before peak)
+                interval = data[:peak]
+                try:
+                    cross = np.nonzero(interval < threshold)[0][-1]
+                        
+                except IndexError: 
+                # this raises when we have the first peak and don't cross the threshold before the start of the signal
+                    cross = 0
+
+                # find corossings around this crossing                
+                if cross == 0:
+                    # if we are handling the first one, skip searching
+                    other_crossings.append(np.full((multiple_thresholds.size*2+1,), np.nan))
+                else:
+    
+                    # find individual crossings
+                    # first find crossings below
+                    start = max(cross - int(mean_period_in_points * peak_min_distance), 0)
+                    short_interval = data[start:cross]
+                    for th in multiple_thresholds[::-1]:
+                        th = threshold - th
+                        
+                        other_cross_array = np.nonzero(short_interval < th)[0]
+                        if other_cross_array.size == 0:
+                            other_cross = np.nan
+                        else:
+                            # last point bellow threshold
+                            other_cross = other_cross_array[-1]
+                            other_cross += start #redefine the 0th inxdex
+                                                    
+                        this_other_crossings.append(other_cross)
+                    
+                    # append the crossing at the middle
+                    this_other_crossings.append(cross)
+                    
+                    # and now crossings above
+                    short_interval = data[cross:peak]
+                    for th in multiple_thresholds:    
+                        th += threshold
+                        
+                        other_cross_array = np.nonzero(short_interval > th)[0]
+                        if other_cross_array.size == 0:
+                            other_cross = np.nan
+                        else:
+                            # first point above threshold
+                            other_cross = other_cross_array[0]
+                            other_cross += cross #redefine the 0th inxdex
+                        
+                        this_other_crossings.append(other_cross)
+                    
+                    other_crossings.append(np.asarray(this_other_crossings))
+                        
+            else:
+                raise NotImplementedError('There is no multi crossing detection for falling edge yet')
+                # find falling edge point (after peak)    
+                starting_point = min(peak + int(mean_period_in_points * peak_min_distance), len(data))
+                interval = data[:starting_point]
+                cross = np.nonzero(interval > threshold)[0][-1]
+            
+            crossings.append(cross)
+            prev_peak = peak
+        
+        if not crossings: # no peaks were found over the threshold
+            raise ValueError(f"It's likely no peaks were found over the given threshold value of {threshold}. Or maybe something else is wrong. Are you sure you have peaks?")
+
+        crossings = np.asarray(crossings)
+        other_crossings = np.asarray(other_crossings)
+        return crossings, other_crossings
+    
     
     def get_edge_periods(self, inx, edge, threshold=5, peak_min_distance=0.5):
         """
@@ -372,6 +516,74 @@ class Processors:
         
         return period_times, periods 
 
+
+    def get_multi_edge_periods(self, inx, edge, threshold=5, threshold_var=3, peak_min_distance=0.5):
+        """
+        Calculate the period as the distance between points at which consecutive
+        cycles cross the threshold. The crossing must be either a rising or 
+        falling edge, depending on "kind". To perform this action, the user must
+        already have performed a findpeaks actions. The crossings are calculated
+        with respect to peaks of the signal. Peaks that are under the threshold
+        or are too close together are ignored.
+
+        Parameters
+        ----------
+        inx : int
+            1 or 2, the channel for which periods are being calculated.
+        edge : str
+            either 'falling' or 'rising'. The kind of edge for which the period
+            is calculated. If kind='rising', the function will look for a rising
+            edge crossing before the peak. If kind='falling', the crossing will
+            happen after the peak.
+        threshold : float, optional
+            Value of the threshold at which the crossing is calculated. 
+            Additionally, if a peak value falls under the threshold, that peak
+            is ignored. The default is 5, which assumes the data has been 
+            detrended.
+        peak_min_distance : float, optional
+            The minimum distance between peaks, in units of average distance
+            between peaks. After one peak is used, any subsequent peaks closer
+            than this value will be ignored. The default is 0.5.
+
+        Returns
+        -------
+        period_times, periods : tuple
+            Tuple containg two arrays: time at which the period is calculated (at
+            which the crossing happens) and value of the interval between two 
+            consecutive crossings.
+        
+        """
+        data = self._df
+        crossings, multi_crossings = self.get_multi_crossings(inx, edge, threshold, threshold_var, peak_min_distance)
+        
+        # handle the nans like so:
+        temp = data.times.values.copy()
+        # add an inf to the end of the array
+        temp = np.append(temp, np.nan)
+        # replace the nans in crossings with -1 to reference the added nan
+        multi_crossings[np.isnan(multi_crossings)] = -1
+        multi_crossings = multi_crossings.astype(int)
+        
+        # the time point in the middle of the oscillation
+        crossing_times = temp[crossings]
+        period_times = crossing_times[:-1] + np.diff(crossing_times ) / 2
+        
+        # get array of periods
+        multi_crossing_times = temp[multi_crossings]
+        all_periods = np.diff(multi_crossing_times, axis=0)
+
+        # filter out rows where we have all nans, to avoid empty slices
+        all_nans = np.all(np.isnan(all_periods), axis=1)
+        all_periods = all_periods[~all_nans]
+        period_times = period_times[~all_nans]
+
+        # the average, std and ptp of each period
+        periods = np.nanmean(all_periods, axis=1)
+        period_err = np.nanstd(all_periods, axis=1)
+        period_ptp = (np.nanmax(all_periods, axis=1) - np.nanmin(all_periods, axis=1)) / 2
+        
+        return period_times, periods, period_err, period_ptp
+
    
     def downsample(self, downsampling_rate=10):
         """
@@ -387,11 +599,14 @@ class Processors:
         New DataFrame with downsampled data
 
         """
+        manually_copy_attrs = 'rec_datetime' , '_twochannel', 'interval'
         downsampled = self._df[::downsampling_rate].copy()
         
         # make sure to keep metadata and processing steps info
         add_run_info(downsampled, self._df.metadata.file)
-        downsampled.metadata.rec_datetime = self._df.metadata.rec_datetime
+        
+        for attr in manually_copy_attrs:
+            setattr(downsampled.metadata, attr, getattr(self._df.metadata, attr))
         for attr in self._all_info_attributes:
             setattr(downsampled.process, attr, getattr(self, attr))
         
@@ -809,8 +1024,66 @@ class Processors:
         lags = signal.correlation_lags(ch1.shape[0], ch2.shape[0]) / sampling_rate
     
         return lags, corr
+    
+    def multi_cross_correlation_lag(self, channels='', bits=None, length=None):
+        """
+        Calculate the cross correlation lag for the run as it evolves over time.
+        To that end, split the run into multiple chunks and calculate the lag
+        on each chunk. Define either the ammount of bits to make or the length
+        (in seconds) of each bit. Can't do both.        
 
+        Parameters
+        ----------
+        channels : str, optional
+            A string describing what channel to apply the funciton on. The 
+            default is ''.
+        bits : int, optional
+            Ammount of bits into which to chop the data. Calculate the cross
+            correlation lag on each bit. The default is None.
+        length : float, optional
+            Length (in seconds) of each bit into which the data gets chopped.
+            Calculat the cross correlation lag on each bit. The default is None.
 
+        Returns
+        -------
+        times, lags : arrays
+            Arrays containing the lag at each instant and the timepoint at 
+            which it was calculated. The time corresponds to the center of the 
+            interval used.
+
+        """
+
+        ch1, ch2 = self._get_channels(channels)
+        sampling_rate = self._df.metadata.sampling_rate
+        N = len(ch1)
+        
+        step_length = self._validate_bits_and_length(bits, length, N, sampling_rate)
+        
+        # calculate the correlation
+        times, lags = [], []
+        for n in range(0, N, step_length):
+            # calculate cross correlation
+            theslice = slice(n, min(n + step_length, N))
+            
+            corr = signal.correlate(ch1[theslice], ch2[theslice])
+            corr /= np.max(corr)
+        
+            size = theslice.stop - theslice.start
+            lags_array = signal.correlation_lags(size, size) / sampling_rate
+            
+            # calculate time and lag
+            lag = lags_array[np.argmax(corr)]
+            time = (theslice.start + theslice.stop) / 2 / sampling_rate
+            
+            times.append(time)
+            lags.append(lag)
+    
+        times = np.asarray(times)
+        lags = np.asarray(lags)
+        
+        return times, lags
+
+                
     def calc_magnitudes_and_phases(self, channels=''):
         """
         Calculates the phase and magnitude of the timeseries in channels using 
@@ -905,6 +1178,145 @@ class Processors:
         lags, corr = self.cross_correlation(channels)
         
         return lags[np.argmax(corr)]
+    
+    
+    def baseline(self, channels='', drop_quantile=0.5):
+        """
+        Uses baseline_in_one_channel to calculate the baseline of the data 
+        given in channel. See that function for a more detailed description.
+
+        Parameters
+        ----------
+       channels : str, optional
+           A string describing what channel to apply the funciton on. The 
+           default is ''.
+        drop_quantile : float, optional
+            Quantile under which to drop the minima. Should be between 0 and 1.
+            0.5 means drop everything over the median. The default is 0.5.
+
+        Returns
+        -------
+        (float, float)
+            Value of the baseline for each channel. The value is repeated (but)
+            not calculated twice) if the data is single channel.
+        """
+        
+        ch1, ch2 = self._get_channels(channels)
+        
+        *_, minima1 = self.baseline_in_one_channel(ch1, drop_quantile)
+        
+        if self._df.metadata.twochannel:
+            *_, minima2 = self.baseline_in_one_channel(ch2, drop_quantile)
+        else:
+            minima2 = minima1
+            
+        return minima1.mean(), minima2.mean()      
+    
+    def multi_baseline(self, channels='', drop_quantile=0.5, bits=None, length=None):
+        """
+        Calculate the local baseline value for each channel. "local" is here 
+        defined by cutting the data into multiple pices and calculating it for 
+        each pice individually. The pices do not overlap. The user can either 
+        decide how many pices to cut the data into using 'bits', or how long 
+        should each pice be (in seconds) using 'length'.
+
+        Parameters
+        ----------
+        channels : str, optional
+            A string describing what channel to apply the funciton on. The 
+            default is ''.
+        drop_quantile : float, optional
+            Quantile under which to drop the minima. Should be between 0 and 1.
+            0.5 means drop everything over the median. The default is 0.5.
+        bits : int, optional
+            Ammount of bits into which to chop the data. Calculate the baseline
+            on each bit. The default is None.
+        length : float, optional
+            Length (in seconds) of each bit into which the data gets chopped.
+            Calculat the baseline on each bit. The default is None.
+
+        Returns
+        -------
+        times : array
+            times at which the baselines where calculated.
+        baselines1 : array
+            baselines of channel 1.
+        baselines2 : TYPE
+            baselines of channel 2.
+
+        """
+        
+        ch1, ch2 = self._get_channels(channels)
+        sampling_rate = self._df.metadata.sampling_rate
+        N = len(ch1)
+        
+        step_length = self._validate_bits_and_length(bits, length, N, sampling_rate)
+        
+        # calculate the baselines
+        baselines1, baselines2 = [], []
+        for ch, b in zip((ch1, ch2), (baselines1, baselines2)):
+            times = []
+            for n in range(0, N, step_length):
+                theslice = slice(n, min(n+step_length, N))
+                *_, minima = self.baseline_in_one_channel(ch.values[theslice], drop_quantile)
+                b.append(minima.mean())
+            
+                time = (theslice.start + theslice.stop)/2 / sampling_rate
+                times.append(time)
+                
+            if not self._df.metadata.twochannel:
+                baselines2 = baselines1
+                break
+        
+        times = np.asarray(times)
+        baselines1 = np.asarray(baselines1)
+        baselines2 = np.asarray(baselines2)
+        
+        return times, baselines1, baselines2
+
+    
+    @staticmethod
+    def baseline_in_one_channel(ch, drop_quantile=0.5):
+        """
+        Finds the local minima of the data in ch and filters out all the ones
+        that are over the given drop_quantile. It returns all the local minima 
+        and the index at which they happen, and the local minima under the 
+        requested quartile, as well as the indexes at which they happen.
+
+        Parameters
+        ----------
+        ch : array
+            Data over which to find the baselines.
+        drop_quantile : float, optional
+            Quantile under which to drop the minima. Should be between 0 and 1.
+            0.5 means drop everything over the median. The default is 0.5.
+
+        Returns
+        -------
+        min_inx : array of ints
+            indexes at which the minima happen.
+        minima : array
+            values of all the local minima.
+        filtered_min_inx : array of ints
+            indexes at which minima that are under the requested quantile happen.
+        filtered_minima : array
+            values of the local minima under the given quantile.
+        """
+        
+        min_inx, _ = signal.find_peaks(ch)
+        minima = ch[min_inx]
+                
+        # find the requested quantile of the minima
+        minima = ch[min_inx]
+        minima_quantile = np.quantile(minima, drop_quantile)
+        
+        # keep only the minima under the requested quantile
+        filtered_min_inx = min_inx[minima<=minima_quantile]
+        filtered_minima = ch[filtered_min_inx]
+        
+        # return filtered_minima.mean()
+        
+        return min_inx, minima, filtered_min_inx, filtered_minima        
         
     
     def find_peaks(self, prominence=5, period_percent=0.6, channels=''):
@@ -927,8 +1339,13 @@ class Processors:
         action_name = 'findpeaks'
         ch1, ch2 = self._get_channels(channels)
         
-        ch1_peak_indexes = self.find_peaks_in_one_channel(self._df.times, ch1)
-        ch2_peak_indexes = self.find_peaks_in_one_channel(self._df.times, ch2)
+        # first channel data
+        ch1_peak_indexes = self.find_peaks_in_one_channel(self._df.times, ch1, prominence, period_percent)
+        # do second only if it's a two channel signal
+        if self._df.metadata.twochannel:
+            ch2_peak_indexes = self.find_peaks_in_one_channel(self._df.times, ch2, prominence, period_percent)    
+        else:
+            ch2_peak_indexes = ch1_peak_indexes 
         
         self.peaks = (ch1_peak_indexes, ch2_peak_indexes)
         self._add_process_entry(action_name, prominence=prominence, period_percent=period_percent, channels=channels)
@@ -1194,6 +1611,43 @@ class Processors:
         else:
             return True
 
+    @staticmethod
+    def _validate_bits_and_length(bits, length, N, sampling_rate):
+        """
+        Intended to use in functions where the data is going to be chopped up 
+        into pices and the function can decide if the pices are defined by a
+        total count or by their duration. Both can't be defined at the same time
+
+        Parameters
+        ----------
+        bits : int
+            How many pices to chop the data into.
+        length : float
+            How long should each pice of data be (in seconds).
+        N : int
+            Size of the data to chop into pices.
+
+        Returns
+        -------
+        step_length : int
+            how many points long is the step needed to conform with either bits
+            of length.            
+        """
+        
+        if bits is None and length is None:
+            raise ValueError('You must give bits or length')
+        if bits is not None and length is not None:
+            raise ValueError("You can't define both bits and length. Choose one.")
+        
+        # calculate the length of the step 
+        if length is not None:
+            step_length = int(length * sampling_rate)
+        if bits is not None:
+            assert isinstance(bits, numbers.Integral)
+            step_length = N // bits
+            
+        return step_length
+    
 #%% Aux functions
 
 def load_any_data(file, *args, **kwargs):
@@ -1317,6 +1771,7 @@ def load_single_channel(file, interval=None, gauss_filter=True, override_raw=Tru
     
     add_run_info(data, file)
     data.metadata.interval = interval
+    data.metadata._twochannel = False
     data.metadata.rec_datetime = abf.abfDateTime
     
     # filter data if needed
@@ -1335,6 +1790,7 @@ def add_run_info(data, file):
     pair_guide_file = file.parent / 'par_guide.xlsx'
     pair_guide = pd.read_excel(pair_guide_file)
     pair_guide['name'] = pair_guide.name.astype(str)
+    # pair_guide = pair_guide.set_index('name')
     run_info = next(pair_guide[pair_guide.name == file.stem].itertuples())
     
     # convert run info into a dict; skip first element, because it's the index
@@ -1447,6 +1903,50 @@ def linear_fit_error(x, yerr):
     return lambda x_eval: np.sqrt( yerr**2/N * (1 + ((x_eval - x.mean())/x.std())**2 ) )
 
 
+def make_scalbar(ax, text=True):
+    """
+    Draw a scalebar onto the plot. It retrieves the ticks from ax and draws a 
+    vertical and horizontal scalebar using the smallest difference in the axis
+    ticks. It's calculated from the ticks and not the lims so tha the value is 
+    always a reasonable integer. Optionally, the text argument labels the 
+    scale bars.
+
+    Parameters
+    ----------
+    ax : matplotlib.Axis
+        Axis onto which to draw the scalebar.
+    text : bool, optional
+        Decides whether to label the scalebars with the scales (no units). The 
+        default is True.
+
+    Raises
+    ------
+    ValueError
+        If the axes don't ahve enough ticks (at least two).
+
+    Returns
+    -------
+    None.
+
+    """
+    
+    xticks = ax.get_xticks()
+    yticks = ax.get_yticks()
+    
+    if len(xticks) < 2 or len(yticks) <2:
+        raise ValueError("Can't built scale bars with so few ticks")
+    
+    # plot bars
+    x_scale = np.diff(xticks)[0]
+    y_scale = np.diff(yticks)[0]
+    
+    ax.plot([xticks[1], xticks[1]+x_scale], [yticks[1], yticks[1]], 'k')
+    ax.plot([xticks[1], xticks[1]], [yticks[1], yticks[1]+y_scale], 'k')
+    
+    if text:
+        ax.text(xticks[1] + x_scale/2, yticks[1]-y_scale/5, str(x_scale), ha='center', va='top')
+        ax.text(xticks[1] - x_scale/5, yticks[1]+y_scale/2, str(y_scale), ha='right')
+    
     
 #%% Analysis functions (repeated in Processors)
 

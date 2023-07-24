@@ -30,9 +30,14 @@ if not data_dir.exists():
     
 # initialize the pair data file:
 pair_guide_columns = 'rec', 'par', 'ch1', 'ch2', 'name', 'mec_start', 'mec_start(sec)', 'duration(min)', 'samplerate', 'comment', 
-translation_keys = {'large-large' : 'LL', 'large-random' : 'LR',
-                    'small-large': 'LS', 'small-random' : 'SR', 'small-small' : 'SS',
-                    'large' : 'L', 'small': 'S', 'random' : 'R'}
+translation_keys = {'large-large' : 'LL', 
+                    'large-random' : 'LR',
+                    'small-large': 'LS', 
+                    'small-random' : 'SR', 
+                    'small-small' : 'SS',
+                    'large' : 'L', 
+                    'small': 'S', 
+                    'random' : 'R'}
 par_guide_dict = {k:[] for k in pair_guide_columns}
 
 # read all files

@@ -14,7 +14,10 @@ import pandas as pd
 import numpy as np
 from scipy import interpolate, signal
 
-from utils import contenidos, find_point_by_value, calc_mode, sort_by, enzip
+from scipy.ndimage import gaussian_filter1d
+from scipy.signal import find_peaks
+
+from utils import contenidos, find_point_by_value, calc_mode, sort_by, enzip, smooth
 import analysis_utils as au
 
 import pyabf
@@ -25,11 +28,13 @@ BASE_DIR = '/media/marcos/DATA/marcos/FloClock_data/phase_response_curve'
 files = contenidos(BASE_DIR, filter_ext='.abf')
 
 file = files[-2]
+print('Running', file.stem)
 
 # Load data
 abf = pyabf.ABF(file)
 
 fig, axarr = plt.subplots(abf.sweepCount, sharex=True)
+axarr = np.atleast_1d(axarr)
 
 # Set sweep and channel, extract tmes and data
 
@@ -87,9 +92,6 @@ for i in abf.sweepList:
 # ax.set_xlim(times.min(), times.max())
 
 #%% Cut sweeps at oscillations and line them up
-
-from scipy.ndimage import gaussian_filter1d
-from scipy.signal import find_peaks
 
 def polydetrend(times, data, degree=5):
     
@@ -374,7 +376,7 @@ axp.legend(loc='upper left', ncol=4)
 axp.set_ylabel('period [sec]')
 
 
-#%% Try to get PRC
+#%% Get PRC
 
 def lowpass_filter(times, data, filter_order, frequency_cutoff):
     
@@ -400,15 +402,39 @@ def highpass_filter(times, data, filter_order, frequency_cutoff):
     return filtered
 
 
-BASE_DIR = '/media/marcos/DATA/marcos/FloClock_data/phase_response_curve'
-BASE_DIR = '/home/user/Documents/Doctorado/Fly clock/FlyClock_data/phase_response_curve'
+def my_find_peaks(times, data, period_percent=0.4, prominence=3):
+    
+    ## first pass, with threshold 0mv
+    p_inx, _ = find_peaks(data, height=0)
+    
+    ## second pass, with threshold given by otsu
+    # threshold = Processors.get_threshold(peaks)
+    # p_inx, _ = signal.find_peaks(ch, height=threshold)
+    # peaks = ch.values[p_inx]
+    t_peaks = times[p_inx]
+
+    ## third pass, with minimum distance between peaks
+    counts, bins = np.histogram(np.diff(t_peaks))
+    bin_centers = bins[:-1] + np.diff(bins) / 2
+    period_mode = bin_centers[ np.argmax(counts) ]
+    distance_points = int(period_mode * period_percent / (times[1] - times[0]))
+    # p_inx, _ = signal.find_peaks(ch, height=threshold, distance=distance_points)
+    p_inx, _ = find_peaks(data, distance=distance_points, prominence=prominence)
+    
+    return p_inx
+
+BASE_DIR = Path('/media/marcos/DATA/marcos/FloClock_data/phase_response_curve')
+# BASE_DIR = '/home/user/Documents/Doctorado/Fly clock/FlyClock_data/phase_response_curve'
 files = contenidos(BASE_DIR, filter_ext='.abf')
 
-file = files[17]
-threshold = 8
+file = files[-3]
+threshold = 5
+METHOD = 'rising' # one of 'rising', 'falling' or 'peaks'
+SMOOTH = True # decides if we should do a harsh lowpass filter on the signal
 
 # Load data
 abf = pyabf.ABF(file)
+print('Running', file.stem)
 
 # to prime it for the first sweep
 times = [0]
@@ -439,18 +465,22 @@ time = time[::10]
 data = data[::10]
 perturbation = perturbation[::10]
 data_hp = highpass_filter(time, data_lp, filter_order=2, frequency_cutoff=0.1)
-data_hplp = lowpass_filter(time, data_lp, filter_order=2, frequency_cutoff=2)
-
+if SMOOTH:
+    data_hp = lowpass_filter(time, data_hp, filter_order=2, frequency_cutoff=2)
 
 # plot
-fig, (ax, ax2, axp) = plt.subplots(3, sharex=True, figsize=[17.69,  7.29], constrained_layout=True)
+fig_main = plt.figure(figsize=[17.69,  7.29], constrained_layout=True)
+fig, fig2 = fig_main.subfigures(1,2, width_ratios=[3,1])
+ax, ax2, axp = fig.subplots(3, sharex=True)
+ax_prc = fig2.subplots()
 
-ax.plot(time, data)
-ax.plot(time, perturbation + data.mean())
-ax.plot(time, data_lp)
+ax.plot(time, data, label='raw')
+ax.plot(time, perturbation + data.mean(), label='perturb.')
+ax.plot(time, data_lp, label='lowpass')
+ax.plot(time, lowpass_filter(time, data_lp, filter_order=2, frequency_cutoff=2))
 
-ax2.plot(time, data_hp)
-ax2.plot(time, perturbation + data_hp.mean())
+ax2.plot(time, data_hp, label='detrended')
+ax2.plot(time, perturbation + data_hp.mean(), label='perturb.')
 
 data = data_hp
 # find peaks and edge crossings
@@ -460,7 +490,7 @@ ax2.plot(time[peaks], data[peaks], 'o')
 
 mean_period_in_points = round(np.diff(peaks).mean())
 
-# find crossover points
+# find crossing points
 rising_edge = []
 falling_edge = []
 filtered_peaks = []
@@ -493,21 +523,37 @@ rising_edge = np.asarray(rising_edge)
 falling_edge = np.asarray(falling_edge)
 peaks = np.asarray(filtered_peaks)
 
+### Choose which event to use as reference
+if METHOD == 'rising':
+    event_index_array = rising_edge # one of rising_edge, falling_edge, peaks
+elif METHOD == 'falling':
+    event_index_array = falling_edge # one of rising_edge, falling_edge, peaks
+elif METHOD == 'peaks':
+    event_index_array = peaks # one of rising_edge, falling_edge, peaks
+else:
+    raise ValueError('"METHOD" has to be one of "rising", "falling" or "peaks"')
+
 # plot peaks and threshold crossings
 ax2.plot(time[peaks], data[peaks], 'ko')
-ax2.plot(time[rising_edge], data[rising_edge], 'o')
+ax2.plot(time[rising_edge], data[rising_edge], 'o', label='edge crossings')
 
 # find cycles with a perturbation
 pert_inxs,  = np.where(np.diff(perturbation) < -1)
 pert_moments = time[pert_inxs]
 ax2.plot(pert_moments, perturbation[pert_inxs], 'kx')
 
-cross_moments = time[rising_edge]
+cross_moments = time[event_index_array]
+
+# filter out cases where we can't detect the cycle because the perturbation fell right on it
+cross_period = np.diff(cross_moments)
+period_times = cross_moments[:-1] + cross_period/2
+valid = au.find_valid_periods(period_times, cross_period, passes=2, threshold=1.6)
 
 perturbed_cylces = []
 perturb_phase = []
+invalid_perturbed_cylces = []
 try:
-    for i, (re1, re2) in enzip(rising_edge, rising_edge[1:]):
+    for i, (re1, re2, v) in enzip(event_index_array, event_index_array[1:], valid):
         # find the first perturbation after the current crossing
         for pert in pert_inxs:
             if pert > re1:
@@ -517,11 +563,16 @@ try:
         
         # if te perturbation happened before the next peak, store it
         if pert <= re2:
-            perturbed_cylces.append(i)
             
-            # get phase of perturbation
-            phase = (pert-re1) / (re2-re1)
-            perturb_phase.append(phase)
+            # keep it only if the period in question was valid
+            if v:
+                perturbed_cylces.append(i)
+                
+                # get phase of perturbation
+                phase = (pert-re1) / (re2-re1)
+                perturb_phase.append(phase)
+            else:
+                invalid_perturbed_cylces.append(i)
             
 except StopIteration:
     # this happens if there are no more perturbations to find
@@ -529,9 +580,15 @@ except StopIteration:
 
 # mark the cycles that have a perturbation
 for inx in perturbed_cylces:
-    start = rising_edge[inx]
-    end = rising_edge[inx+1]
+    start = event_index_array[inx]
+    end = event_index_array[inx+1]
     ax2.plot(time[start:end], data_hp[start:end], 'r')
+
+for inx in invalid_perturbed_cylces:
+    start = event_index_array[inx]
+    end = event_index_array[inx+1]
+    # ax2.plot(time[start:end], data_hp[start:end], 'r')
+    ax2.fill_betweenx([data_hp.min(), data_hp.max()], time[start], time[end], color='0.7', zorder=1)
     
 for pi, ph in zip(pert_inxs, perturb_phase):
     ax2.text(time[pi], perturbation[pi]+0.5, f'{ph:.2f}')
@@ -541,31 +598,203 @@ pert_dipi = []
 prev_dipi = []
 for inx in perturbed_cylces:
 
-    re_2 = rising_edge[inx-2]
-    re_1 = rising_edge[inx-1]
-    re0 = rising_edge[inx]
-    re1 = rising_edge[inx+1]
+    re_1 = event_index_array[inx-2]
+    re0 = event_index_array[inx-1]
+    re1 = event_index_array[inx]
+    re2 = event_index_array[inx+1]
     
-    pert_ipi = time[re1] - time[re0]
-    base_ipi = time[re0] - time[re_1]
-    prev_ipi = time[re_1] - time[re_2]
+    pert_ipi = time[re2] - time[re1]
+    base_ipi = time[re1] - time[re0]
+    prev_ipi = time[re0] - time[re_1]
 
     pert_dipi.append( (pert_ipi - base_ipi) / base_ipi )
     prev_dipi.append( (prev_ipi - base_ipi) / base_ipi )
     
-pert_dipi = np.asarray(pert_dipi)
-prev_dipi = np.asarray(prev_dipi)
-dipi_times = time[rising_edge[perturbed_cylces]]
+    # prev_dipi.append( (base_ipi - prev_ipi) / prev_ipi )
+    
+    
+# pert_dipi = np.asarray(pert_dipi)
+# prev_dipi = np.asarray(prev_dipi)
+# dipi_times = time[event_index_array[perturbed_cylces]]
+
+# convert lists to sorted arrays
+pert_dipi = np.asarray( sort_by(pert_dipi, perturb_phase))
+prev_dipi = np.asarray( sort_by(prev_dipi, perturb_phase))
+dipi_times = np.asarray( sort_by(time[event_index_array[perturbed_cylces]],perturb_phase))
+perturb_phase = np.asarray(sorted(perturb_phase))
+
 
 # plot them
-axp.plot(dipi_times, pert_dipi, 'x')
-axp.plot(dipi_times, prev_dipi, '+')
+axp.plot(dipi_times, pert_dipi, 'x', label=r'$T_0$')
+# axp.plot(dipi_times, prev_dipi, '+', label=r'$T_{-1}$', c='k')
+axp.plot(dipi_times, prev_dipi, '+', label=r'$T_{-2}$', c='k')
 
 # plot PRC
-fig2, ax_prc = plt.subplots()
 
-ax_prc.plot(perturb_phase, pert_dipi, 'x')
-ax_prc.plot(perturb_phase, prev_dipi, '+')
+ax_prc.plot(perturb_phase, pert_dipi, 'o', c='C0')
+ax_prc.plot(perturb_phase, smooth(pert_dipi, size=9), c='C0', label='smoothed PRC')
+ax_prc.plot(perturb_phase, smooth(prev_dipi, size=9), c='k', label='smoothed reference')
+ax_prc.plot(perturb_phase, prev_dipi, '+', c='k')
+ax_prc.fill_between([0, 1],-prev_dipi.std(), prev_dipi.std(), color='0.6', label='algo. detection limit')
+# av = np.abs(prev_dipi).mean()
+# ax_prc.fill_between([0, 1],-av, av, color='C1', alpha=0.5)
+
+# Format plots
+ax_prc.grid()
+ax_prc.set_xlabel('Phase [normalized]')
+ax_prc.set_ylabel(r'Δipi = $\frac{T_0-T_{-1}}{T_{-1}}$')
+ax_prc.set_title(f'PRC from {METHOD}')
+
+ax.set_title('Time series and analysis')
+axp.set_xlabel('Time [sec]')
+ax.set_ylabel('mV')
+ax2.set_ylabel('detrended signal [mV]')
+axp.set_ylabel('periods [s]')
+
+ax.legend()
+ax2.legend()
+axp.legend()
+axp.grid()
+ax_prc.legend()
+
+#%% Save all methods for one file
+
+"""Run previous cell first"""
+
+for METHOD in ('rising', 'falling', 'peaks'):
+    ### Choose which event to use as reference
+    if METHOD == 'rising':
+        event_index_array = rising_edge # one of rising_edge, falling_edge, peaks
+    elif METHOD == 'falling':
+        event_index_array = rising_edge # one of rising_edge, falling_edge, peaks
+    elif METHOD == 'peaks':
+        event_index_array = rising_edge # one of rising_edge, falling_edge, peaks
+    else:
+        raise ValueError('"METHOD" has to be one of "rising", "falling" or "peaks"')
+    
+    # find cycles with a perturbation
+    pert_inxs,  = np.where(np.diff(perturbation) < -1)
+    pert_moments = time[pert_inxs]
+    
+    cross_moments = time[event_index_array]
+    
+    # filter out cases where we can't detect the cycle because the perturbation fell right on it
+    cross_period = np.diff(cross_moments)
+    period_times = cross_moments[:-1] + cross_period/2
+    valid = au.find_valid_periods(period_times, cross_period, passes=2, threshold=1.6)
+    
+    perturbed_cylces = []
+    perturb_phase = []
+    try:
+        for i, (re1, re2, v) in enzip(event_index_array, event_index_array[1:], valid):
+            # find the first perturbation after the current crossing
+            for pert in pert_inxs:
+                if pert > re1:
+                    break
+            else:
+                raise StopIteration()
+            
+            # keep it only if the period in question was valid
+            if not v:
+                continue
+            
+            # if te perturbation happened before the next peak, store it
+            if pert <= re2:
+                perturbed_cylces.append(i)
+                
+                # get phase of perturbation
+                phase = (pert-re1) / (re2-re1)
+                perturb_phase.append(phase)
+                
+    except StopIteration:
+        # this happens if there are no more perturbations to find
+        pass
+    
+    # calculate and store the (normalzied) Δipi
+    pert_dipi = []
+    prev_dipi = []
+    for inx in perturbed_cylces:
+    
+        re_1 = event_index_array[inx-2]
+        re0 = event_index_array[inx-1]
+        re1 = event_index_array[inx]
+        re2 = event_index_array[inx+1]
+        
+        pert_ipi = time[re2] - time[re1]
+        base_ipi = time[re1] - time[re0]
+        prev_ipi = time[re0] - time[re_1]
+    
+        pert_dipi.append( (pert_ipi - base_ipi) / base_ipi )
+        prev_dipi.append( (prev_ipi - base_ipi) / base_ipi )
+        
+    # convert lists to sorted arrays
+    pert_dipi = np.asarray( sort_by(pert_dipi, perturb_phase))
+    prev_dipi = np.asarray( sort_by(prev_dipi, perturb_phase))
+    perturb_phase = np.asarray(sorted(perturb_phase))
+
+    np.savez(BASE_DIR / 'output' / 'PRC' / METHOD / file.stem,
+            pert_dipi = pert_dipi,
+            prev_dipi = prev_dipi,
+            perturb_phase = perturb_phase,
+            
+            pert_ipi = pert_ipi,
+            base_ipi = base_ipi,
+            prev_ipi = prev_ipi,
+            )
+
+
+#%% Analize all clustered PRC data
+
+BASE_DIR = Path('/media/marcos/DATA/marcos/FloClock_data/phase_response_curve/output/PRC')
+methods_dirs = contenidos(BASE_DIR)
+
+
+fig, axarr = plt.subplots(3, 1, sharey=True, sharex=True, constrained_layout=True)
+
+for ax, method_dir in zip(axarr, methods_dirs):
+    data_files = contenidos(method_dir)
+    method = method_dir.name
+
+    phases = []
+    perturbed = []
+    reference = []
+    for file in data_files:
+        loaded = np.load(file)
+        
+        pert_dipi = loaded['pert_dipi']
+        prev_dipi = loaded['prev_dipi']
+        perturb_phase = loaded['perturb_phase']
+        
+        phases.extend(perturb_phase)
+        perturbed.extend(pert_dipi)
+        reference.extend(prev_dipi)
+    
+    perturbed = np.asarray( sort_by(perturbed, phases))
+    reference = np.asarray( sort_by(reference, phases))
+    phases = np.asarray(sorted(phases))
+    
+    ax.plot(phases, perturbed, 'o', c='C0')
+    ax.plot(phases, reference, 'kx')
+    
+    repeated = np.concatenate((perturbed, perturbed, perturbed)) 
+    repeated_phase = np.concatenate((phases-1, phases, phases+1))
+    ax.plot(repeated_phase, smooth(repeated, size=13), c='C03')
+    
+    step = 11
+    binned_phase = [np.mean(repeated_phase[i:i+1]) for i in range(0, len(repeated), step)]
+    binned_PRC = [np.mean(repeated[i:i+step]) for i in range(0, len(repeated), step)]
+    binned_PRC_err = [np.std(repeated[i:i+step]) for i in range(0, len(repeated), step)]
+    ax.errorbar(binned_phase, binned_PRC, binned_PRC_err, fmt='o', color='C03')
+    
+    reference_std = np.std(reference[np.abs(reference) < 1])
+    ax.fill_between([0, 1], -reference_std, reference_std, color='0.6')
+
+    ax.set_ylabel(f'PRC ({method})')
+    
+ax.set_ylim(-1, 1)
+ax.set_xlim(0, 1)
+ax.set_xlabel('phase')
+
 
 #%%
 

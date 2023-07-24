@@ -1199,6 +1199,9 @@ def smooth(x, size, window=np.hamming):
         Smoothed data of the same size as the input array, as long as the passed
         window has some behaviour to handle edges. This is the default behaviour.
     """
+    if not isinstance(x, np.ndarray):
+        x = np.asarray(x)
+    
     s=np.r_[x[size-1:0:-1], x, x[-2:-size-1:-1]]
     w = window(size)
     y = np.convolve(w/w.sum(), s, mode='same')
@@ -1218,6 +1221,8 @@ def calc_mode(x, use='kde', bins=None, center=True):
     
     This function is useful when the data in question is continuos and you can
     only approximate the subjacent probability density.
+    
+    If all the datapoints are nan, simply return nan. Else, skip all nan values.
 
     Parameters
     ----------
@@ -1241,6 +1246,17 @@ def calc_mode(x, use='kde', bins=None, center=True):
     mode : number
 
     """
+    
+    # handle nans
+    if all(np.isnan(x)):
+        return np.nan
+    
+    x = np.asarray(x)
+    x = x[~np.isnan(x)]
+    
+    # if after filtering, only one element remains, return that as the mode
+    if x.size == 1:
+        return x[0]
     
     if use=='kde':
         # following https://rmflight.github.io/post/finding-modes-using-kernel-density-estimates/
