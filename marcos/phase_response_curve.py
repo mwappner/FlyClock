@@ -427,7 +427,7 @@ BASE_DIR = Path('/media/marcos/DATA/marcos/FloClock_data/phase_response_curve')
 # BASE_DIR = '/home/user/Documents/Doctorado/Fly clock/FlyClock_data/phase_response_curve'
 files = contenidos(BASE_DIR, filter_ext='.abf')
 
-file = files[-3]
+file = files[26] # using 40, 39, 38, 36, 35, 34, 33, 32, 30, 29, 26
 threshold = 5
 METHOD = 'rising' # one of 'rising', 'falling' or 'peaks'
 SMOOTH = True # decides if we should do a harsh lowpass filter on the signal
@@ -476,8 +476,8 @@ ax_prc = fig2.subplots()
 
 ax.plot(time, data, label='raw')
 ax.plot(time, perturbation + data.mean(), label='perturb.')
-ax.plot(time, data_lp, label='lowpass')
-ax.plot(time, lowpass_filter(time, data_lp, filter_order=2, frequency_cutoff=2))
+ax.plot(time, data_lp, label='lowpass $f_c$=10')
+ax.plot(time, lowpass_filter(time, data_lp, filter_order=2, frequency_cutoff=2), label='lowpass $f_c$=2')
 
 ax2.plot(time, data_hp, label='detrended')
 ax2.plot(time, perturbation + data_hp.mean(), label='perturb.')
@@ -486,7 +486,7 @@ data = data_hp
 # find peaks and edge crossings
 
 peaks = my_find_peaks(time, data)
-ax2.plot(time[peaks], data[peaks], 'o')
+ax2.plot(time[peaks], data[peaks], 'o', label='peaks')
 
 mean_period_in_points = round(np.diff(peaks).mean())
 
@@ -534,7 +534,7 @@ else:
     raise ValueError('"METHOD" has to be one of "rising", "falling" or "peaks"')
 
 # plot peaks and threshold crossings
-ax2.plot(time[peaks], data[peaks], 'ko')
+ax2.plot(time[peaks], data[peaks], 'k.', label='filtered_peaks')
 ax2.plot(time[rising_edge], data[rising_edge], 'o', label='edge crossings')
 
 # find cycles with a perturbation
@@ -553,23 +553,23 @@ perturbed_cylces = []
 perturb_phase = []
 invalid_perturbed_cylces = []
 try:
-    for i, (re1, re2, v) in enzip(event_index_array, event_index_array[1:], valid):
+    for i, (e1, e2, v) in enzip(event_index_array, event_index_array[1:], valid):
         # find the first perturbation after the current crossing
         for pert in pert_inxs:
-            if pert > re1:
+            if pert > e1:
                 break
         else:
             raise StopIteration()
         
         # if te perturbation happened before the next peak, store it
-        if pert <= re2:
+        if pert <= e2:
             
             # keep it only if the period in question was valid
             if v:
                 perturbed_cylces.append(i)
                 
                 # get phase of perturbation
-                phase = (pert-re1) / (re2-re1)
+                phase = (pert-e1) / (e2-e1) # here dividing indexes or actual time values is identical
                 perturb_phase.append(phase)
             else:
                 invalid_perturbed_cylces.append(i)
@@ -589,60 +589,63 @@ for inx in invalid_perturbed_cylces:
     end = event_index_array[inx+1]
     # ax2.plot(time[start:end], data_hp[start:end], 'r')
     ax2.fill_betweenx([data_hp.min(), data_hp.max()], time[start], time[end], color='0.7', zorder=1)
-    
+
+# plot one extra patch to label it
+ax2.fill_betweenx([data_hp.min(), data_hp.max()], time[start], time[end], color='0.7', zorder=1, label='invalid')
+
 for pi, ph in zip(pert_inxs, perturb_phase):
     ax2.text(time[pi], perturbation[pi]+0.5, f'{ph:.2f}')
 
-# calculate and store the (normalzied) Δipi
-pert_dipi = []
-prev_dipi = []
+# calculate and store the (normalzied) ΔCD
+pert_dcd = []
+prev_dcd = []
 for inx in perturbed_cylces:
 
-    re_1 = event_index_array[inx-2]
-    re0 = event_index_array[inx-1]
-    re1 = event_index_array[inx]
-    re2 = event_index_array[inx+1]
+    e_1 = event_index_array[inx-2]
+    e0 = event_index_array[inx-1]
+    e1 = event_index_array[inx]
+    e2 = event_index_array[inx+1]
     
-    pert_ipi = time[re2] - time[re1]
-    base_ipi = time[re1] - time[re0]
-    prev_ipi = time[re0] - time[re_1]
+    pert_cd = time[e2] - time[e1]
+    base_cd = time[e1] - time[e0]
+    prev_cd = time[e0] - time[e_1]
 
-    pert_dipi.append( (pert_ipi - base_ipi) / base_ipi )
-    prev_dipi.append( (prev_ipi - base_ipi) / base_ipi )
+    pert_dcd.append( (pert_cd - base_cd) / base_cd )
+    prev_dcd.append( (prev_cd - base_cd) / base_cd )
     
-    # prev_dipi.append( (base_ipi - prev_ipi) / prev_ipi )
+    # prev_dcd.append( (base_cd - prev_cd) / prev_cd )
     
     
-# pert_dipi = np.asarray(pert_dipi)
-# prev_dipi = np.asarray(prev_dipi)
-# dipi_times = time[event_index_array[perturbed_cylces]]
+# pert_dcd = np.asarray(pert_dcd)
+# prev_dcd = np.asarray(prev_dcd)
+# dcd_times = time[event_index_array[perturbed_cylces]]
 
 # convert lists to sorted arrays
-pert_dipi = np.asarray( sort_by(pert_dipi, perturb_phase))
-prev_dipi = np.asarray( sort_by(prev_dipi, perturb_phase))
-dipi_times = np.asarray( sort_by(time[event_index_array[perturbed_cylces]],perturb_phase))
+pert_dcd = np.asarray( sort_by(pert_dcd, perturb_phase))
+prev_dcd = np.asarray( sort_by(prev_dcd, perturb_phase))
+dcd_times = np.asarray( sort_by(time[event_index_array[perturbed_cylces]],perturb_phase))
 perturb_phase = np.asarray(sorted(perturb_phase))
 
 
 # plot them
-axp.plot(dipi_times, pert_dipi, 'x', label=r'$T_0$')
-# axp.plot(dipi_times, prev_dipi, '+', label=r'$T_{-1}$', c='k')
-axp.plot(dipi_times, prev_dipi, '+', label=r'$T_{-2}$', c='k')
+axp.plot(dcd_times, pert_dcd, 'x', label=r'$T_0$')
+# axp.plot(dcd_times, prev_dcd, '+', label=r'$T_{-1}$', c='k')
+axp.plot(dcd_times, prev_dcd, '+', label=r'$T_{-2}$', c='k')
 
 # plot PRC
 
-ax_prc.plot(perturb_phase, pert_dipi, 'o', c='C0')
-ax_prc.plot(perturb_phase, smooth(pert_dipi, size=9), c='C0', label='smoothed PRC')
-ax_prc.plot(perturb_phase, smooth(prev_dipi, size=9), c='k', label='smoothed reference')
-ax_prc.plot(perturb_phase, prev_dipi, '+', c='k')
-ax_prc.fill_between([0, 1],-prev_dipi.std(), prev_dipi.std(), color='0.6', label='algo. detection limit')
-# av = np.abs(prev_dipi).mean()
+ax_prc.plot(perturb_phase, pert_dcd, 'o', c='C0')
+ax_prc.plot(perturb_phase, smooth(pert_dcd, size=9), c='C0', label='smoothed PRC')
+ax_prc.plot(perturb_phase, smooth(prev_dcd, size=9), c='k', label='smoothed reference')
+ax_prc.plot(perturb_phase, prev_dcd, '+', c='k')
+ax_prc.fill_between([0, 1],-prev_dcd.std(), prev_dcd.std(), color='0.6', label='algo. detection limit')
+# av = np.abs(prev_dcd).mean()
 # ax_prc.fill_between([0, 1],-av, av, color='C1', alpha=0.5)
 
 # Format plots
 ax_prc.grid()
 ax_prc.set_xlabel('Phase [normalized]')
-ax_prc.set_ylabel(r'Δipi = $\frac{T_0-T_{-1}}{T_{-1}}$')
+ax_prc.set_ylabel(r'ΔCD = $\frac{T_0-T_{-1}}{T_{-1}}$')
 ax_prc.set_title(f'PRC from {METHOD}')
 
 ax.set_title('Time series and analysis')
@@ -666,9 +669,9 @@ for METHOD in ('rising', 'falling', 'peaks'):
     if METHOD == 'rising':
         event_index_array = rising_edge # one of rising_edge, falling_edge, peaks
     elif METHOD == 'falling':
-        event_index_array = rising_edge # one of rising_edge, falling_edge, peaks
+        event_index_array = falling_edge # one of rising_edge, falling_edge, peaks
     elif METHOD == 'peaks':
-        event_index_array = rising_edge # one of rising_edge, falling_edge, peaks
+        event_index_array = peaks # one of rising_edge, falling_edge, peaks
     else:
         raise ValueError('"METHOD" has to be one of "rising", "falling" or "peaks"')
     
@@ -703,43 +706,47 @@ for METHOD in ('rising', 'falling', 'peaks'):
                 perturbed_cylces.append(i)
                 
                 # get phase of perturbation
-                phase = (pert-re1) / (re2-re1)
+                phase = (pert-re1) / (re2-re1) # here dividing indexes or actual time values is identical
                 perturb_phase.append(phase)
                 
     except StopIteration:
         # this happens if there are no more perturbations to find
         pass
     
-    # calculate and store the (normalzied) Δipi
-    pert_dipi = []
-    prev_dipi = []
+    # calculate and store the (normalzied) ΔCD
+    pert_dcd = []
+    prev_dcd = []
     for inx in perturbed_cylces:
     
-        re_1 = event_index_array[inx-2]
-        re0 = event_index_array[inx-1]
-        re1 = event_index_array[inx]
-        re2 = event_index_array[inx+1]
+        # locations of the events (previous cycle, perturbed cycle, next cycle)
+        e_1 = event_index_array[inx-2]
+        e0 = event_index_array[inx-1]
+        e1 = event_index_array[inx]
+        e2 = event_index_array[inx+1]
         
-        pert_ipi = time[re2] - time[re1]
-        base_ipi = time[re1] - time[re0]
-        prev_ipi = time[re0] - time[re_1]
+        pert_cd = time[e2] - time[e1]
+        base_cd = time[e1] - time[e0]
+        prev_cd = time[e0] - time[e_1]
     
-        pert_dipi.append( (pert_ipi - base_ipi) / base_ipi )
-        prev_dipi.append( (prev_ipi - base_ipi) / base_ipi )
+        pert_dcd.append( (pert_cd - base_cd) / base_cd )
+        prev_dcd.append( (prev_cd - base_cd) / base_cd )
         
     # convert lists to sorted arrays
-    pert_dipi = np.asarray( sort_by(pert_dipi, perturb_phase))
-    prev_dipi = np.asarray( sort_by(prev_dipi, perturb_phase))
+    pert_dcd = np.asarray( sort_by(pert_dcd, perturb_phase))
+    prev_dcd = np.asarray( sort_by(prev_dcd, perturb_phase))
     perturb_phase = np.asarray(sorted(perturb_phase))
 
     np.savez(BASE_DIR / 'output' / 'PRC' / METHOD / file.stem,
-            pert_dipi = pert_dipi,
-            prev_dipi = prev_dipi,
+            pert_dcd = pert_dcd,
+            prev_dcd = prev_dcd,
             perturb_phase = perturb_phase,
             
-            pert_ipi = pert_ipi,
-            base_ipi = base_ipi,
-            prev_ipi = prev_ipi,
+            pert_cd = pert_cd,
+            base_cd = base_cd,
+            prev_cd = prev_cd,
+            
+            time = time,
+            event_index_array = event_index_array
             )
 
 
@@ -761,13 +768,13 @@ for ax, method_dir in zip(axarr, methods_dirs):
     for file in data_files:
         loaded = np.load(file)
         
-        pert_dipi = loaded['pert_dipi']
-        prev_dipi = loaded['prev_dipi']
+        pert_dcd = loaded['pert_dcd']
+        prev_dcd = loaded['prev_dcd']
         perturb_phase = loaded['perturb_phase']
         
         phases.extend(perturb_phase)
-        perturbed.extend(pert_dipi)
-        reference.extend(prev_dipi)
+        perturbed.extend(pert_dcd)
+        reference.extend(prev_dcd)
     
     perturbed = np.asarray( sort_by(perturbed, phases))
     reference = np.asarray( sort_by(reference, phases))

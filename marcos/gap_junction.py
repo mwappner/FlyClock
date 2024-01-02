@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 from matplotlib import cm
 import pandas as pd
 import numpy as np
-from scipy import interpolate, signal
+from scipy import interpolate, signal, stats
 
 from utils import contenidos, find_point_by_value, calc_mode, sort_by, enzip
 import analysis_utils as au
@@ -56,8 +56,8 @@ pcolor_alt = '#7ad6b7ff'
 
 BASE_DIR = '/media/marcos/DATA/marcos/FloClock_data/gap_junctions/'
 
-pair_type = 2 # 0: l-l, 1: l-r, 2: s-l, 3:s-s
-run_nr = 1
+pair_type = 3 # 0: l-l, 1: l-r, 2: s-l, 3:s-s
+run_nr = 0
 
 files = contenidos(BASE_DIR)
 runs = contenidos(files[pair_type])
@@ -100,7 +100,7 @@ fig.suptitle(runs[0].parent.name)
 
 BASE_DIR = '/media/marcos/DATA/marcos/FloClock_data/gap_junctions/'
 
-pair_type = 0 # 0: l-l, 1: l-r, 2: s-l, 3:s-s
+pair_type = 2 # 0: l-l, 1: l-r, 2: s-l, 3:s-s
 run_nr = 0
 
 files = contenidos(BASE_DIR)
@@ -162,11 +162,16 @@ for i in abf.sweepList[::-1]:
             
             # plot filtered minima and trend line
             ax.plot(times[min_inx_pice], minima, '.', c='r')
-            ax.hlines(minima.mean(), times[pstart], times[pend], color='k')
+            baseline = minima.mean()
+            ax.hlines(baseline, times[pstart], times[pend], color='k')
+            
+            # plot confidence interval
+            baseline_err = minima.std()
             
             if i==2:
-                axx.hlines(minima.mean(), times[pstart], times[pend], color='k')
-    
+                axx.hlines(baseline, times[pstart], times[pend], color='k')
+                axx.fill_between(times[pstart:pend], baseline-baseline_err, baseline+baseline_err, facecolor='0.7')
+
     for p1 in abf.sweepEpochs.p1s:
         ax1.axvline(times[p1], color='k', ls='--', alpha=.5)
 
@@ -178,7 +183,7 @@ axarr[0].set_title(runs[0].parent.name)
 
 axx1.set_xlim(0, 90)
 axx1.set_ylim(-135, -15)
-au.make_scalbar(axx2)
+au.make_scalebar(axx2)
 
 
 #%% Extract the values from all runs
@@ -400,16 +405,20 @@ lines = []
 
 # First, cell on which the current was applied
 
+# all points
 colors_dict = {'small': scolor_alt, 'large': lcolor_alt}
 handles = {}
+same_vals = {'small':[], 'large':[]} # baseline values in the cell the current was applied
 for _, row in output_df.iterrows():
     ctype = row.ch1
     vals = (row[[ch for ch in output_df.columns if 'ch1_dur' in ch]].values / row[[ch for ch in output_df.columns if 'ch1_pre' in ch]].values).astype(float)
     l, = ax.plot([0, 3, 6], vals,
                  ls = '-', marker='.', color=colors_dict[ctype], label=ctype)
     
+    same_vals[ctype].append(vals)
     handles[ctype] = l
 
+# average
 color_order = [lcolor, scolor]
 for i, (celltype, grouped) in enumerate(output_df.groupby('ch1')):
     val_pre = grouped[[ch for ch in output_df.columns if 'ch1_pre' in ch]].values
@@ -422,16 +431,20 @@ ax.legend(handles = handles.values())
     
 # Second, other cell
 
+# all points
 colors_dict = {'small-small': scolor_alt, 'large-large': lcolor_alt, 'small-large': pcolor_alt, }
 handles = {}
+diff_vals = {'small-small':[], 'large-large':[], 'small-large':[]} # baseline values in the cell the current was not applied
 for _, row in output_df.iterrows():
     ctype = row.type
     vals = (row[[ch for ch in output_df.columns if 'ch2_dur' in ch]].values / row[[ch for ch in output_df.columns if 'ch2_pre' in ch]].values).astype(float)
     l, = ax2.plot([0, 3, 6], vals, 
                  ls = '-', marker='.', color=colors_dict[ctype], label=ctype)
     
+    diff_vals[ctype].append(vals)
     handles[ctype] = l
 
+# average
 color_order = [lcolor, pcolor, scolor]
 for i, (celltype, grouped) in enumerate(output_df.groupby('type')):
     val_pre = grouped[[ch for ch in output_df.columns if 'ch2_pre' in ch]].values
@@ -455,3 +468,33 @@ ax2.set_title('Other cell (second in the pair)')
 
 # ax.set_yscale('log', base=2)
 # ax2.set_yscale('log', base=2)
+
+# pairwise statistical tests
+names = 'In the same cell', 'In the other cell'
+
+print('\n Pariwise tests: p_t = students-t | p_w : mann-whitney')
+print(' Global test: Kruscak-Wallis\n')
+for name, vals in zip(names, (same_vals, diff_vals)):
+    print(name)
+    for kind, values in vals.items():
+        print('\t', kind)
+        values = np.asarray(values)
+        
+        # unpack the three data gropus with different applied currents
+        current_0, current_3, current_6 = values.T
+        current_values = '3pA', '6pA'
+        
+        for curr_val, data in zip(current_values, (current_3, current_6)):
+            print(f'\t\t {curr_val}', end=' ')
+            
+            # get p-values
+            pval_t = stats.ttest_ind(current_0, data).pvalue
+            pval_w = stats.mannwhitneyu(current_0, data).pvalue
+                
+            print(f' :: p_t:{pval_t:.2e} \tp_w:{pval_w:.2e} \t (n={data.size})')
+
+        res_k = stats.kruskal(current_0, current_3, current_6)
+        print('\t\t global :: pval =', f'{res_k.pvalue:.3e}')
+
+    print()
+

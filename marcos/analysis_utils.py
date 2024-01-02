@@ -1903,7 +1903,7 @@ def linear_fit_error(x, yerr):
     return lambda x_eval: np.sqrt( yerr**2/N * (1 + ((x_eval - x.mean())/x.std())**2 ) )
 
 
-def make_scalbar(ax, text=True):
+def make_scalebar(ax, text=True):
     """
     Draw a scalebar onto the plot. It retrieves the ticks from ax and draws a 
     vertical and horizontal scalebar using the smallest difference in the axis

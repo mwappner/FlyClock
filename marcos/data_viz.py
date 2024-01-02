@@ -10,6 +10,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import matplotlib.patheffects as pe
+from matplotlib import colors
 import pandas as pd
 import numpy as np
 from scipy import interpolate, stats
@@ -20,7 +21,9 @@ import analysis_utils as au
 
 
 scolor = '#d06c9eff'
+scoloralt = '#d699b7ff'
 lcolor = '#006680ff'
+lcoloalt = '#1fa0c1ff'
 pcolor = '#1db17eff'
 #%% Visualzie raw data
 
@@ -55,8 +58,8 @@ plt_slice = slice(220000, 320000)
 ax3.plot(times[plt_slice], ch1[plt_slice])
 ax4.plot(times[plt_slice], ch2[plt_slice])
 
-# au.make_scalbar(ax1)
-# au.make_scalbar(ax3)
+# au.make_scalebar(ax1)
+# au.make_scalebar(ax3)
 
 # ax1.axvline(times[220000])
 # ax1.axvline(times[320000])
@@ -177,7 +180,7 @@ for ax in 'cz':
 # Load data
 data_dir = '/media/marcos/DATA/marcos/FloClock_data/data'
 # data_dir = '/media/marcos/DATA//marcos/FloClock_data/data - mecamilamina'
-file_inx = 1
+file_inx = 10
 
 data_files = contenidos(data_dir, filter_ext='.abf')
 pair_guide_file = contenidos(data_dir, filter_ext='.xlsx').pop()
@@ -200,15 +203,15 @@ ax.plot(data.times, data.ch2)
 # ax.plot(data.times, data.ch2_lpfilt)
 ax.plot(data.times, data.ch2_lpfilt_lpfilt)
 
-start_times = [265, 480]
-end_times = [285, 500]
+start_times = [170, 285]
+end_times = [185, 300]
 for startt, endt, axz in zip(start_times, end_times, (ax1, ax2)):
     start = find_point_by_value(data.times, startt)
     end = find_point_by_value(data.times, endt)
     
     axz.plot(data.times[start:end], data.ch2.values[start:end])
-    # axz.plot(data.times[start:end], data.ch2_lpfilt.values[start:end])
-    axz.plot(data.times[start:end], data.ch2_lpfilt_lpfilt.values[start:end])
+    axz.plot(data.times[start:end], data.ch2_lpfilt.values[start:end])
+    # axz.plot(data.times[start:end], data.ch2_lpfilt_lpfilt.values[start:end])
     
     # mark the zoomed in areas
     ax.fill_betweenx(ax.get_ylim(), startt, endt, color='0.5')
@@ -229,7 +232,7 @@ ax.set_xlabel('Time [seconds]')
 
 # make scale bar
 for axi in axdict.values():
-    au.make_scalbar(axi)
+    au.make_scalebar(axi)
 
 
 #%% Dual channel plots for figures
@@ -237,7 +240,7 @@ for axi in axdict.values():
 # Load data
 data_dir = '/media/marcos/DATA/marcos/FloClock_data/data'
 # data_dir = '/media/marcos/DATA//marcos/FloClock_data/data - mecamilamina'
-file_inx = 11 # 0, 22, 37
+file_inx = 1 # 0, 11, 22, 37
 plot_interval = [125, 155]
 plot_interval = [30, 40]
 
@@ -281,13 +284,60 @@ if hasattr(data.metadata, 'mec_start_sec'):
 fig.suptitle(data.metadata.file.stem)
 axarr[-1, 0].set_xlabel('Time [seconds]')
 
-# axarr[0, 0].set_ylim(-70, -10)
+axarr[0, 0].set_ylim(-70, -10)
 axarr[0, 0].set_ylim(-10, 30)
 
 # make scale bar
 for axi in axarr.flat:
-    au.make_scalbar(axi)
+    au.make_scalebar(axi)
+
+
+#%% Dual channel superimposed plots
+
+# Load data
+data_dir = '/media/marcos/DATA/marcos/FloClock_data/data'
+# data_dir = '/media/marcos/DATA//marcos/FloClock_data/data - mecamilamina'
+file_inx = 18 # 0, 11, 22, 37
+plot_interval = [
+    # 5.5, 20.5 #1: LL
+    83, 99, #18: LS
+    # 427, 443 #42: SS
+    ]
+
+data_files = contenidos(data_dir, filter_ext='.abf')
+pair_guide_file = contenidos(data_dir, filter_ext='.xlsx').pop()
+
+# Process data a bit
+data = au.load_data(data_files[file_inx], gauss_filter=True, override_raw=False)
+data.process.lowpass_filter(filter_order=2, frequency_cutoff=10, keep_og=True)
+data = data.process.downsample()
+data.process.highpass_filter(filter_order=2, frequency_cutoff=0.1, channels='lpfilt', keep_og=True)
+data.process.lowpass_filter(filter_order=2, frequency_cutoff=2, keep_og=True, channels='lpfilt_hpfilt') #apply it on the non-detrended data because we will detrned manually later when plotting
+data = data.process.downsample(2)
+
+fig, ax = plt.subplots(figsize=[17, 6])
     
+start = find_point_by_value(data.times, plot_interval[0])
+end = find_point_by_value(data.times, plot_interval[1])
+
+for ch in (1,2):
+    
+    ax.plot(data.times[start:end], data[f'ch{ch}_lpfilt_hpfilt_lpfilt'][start:end])
+    ax.plot(data.times[start:end], data[f'ch{ch}'][start:end] - data.process.get_hptrend(ch)[start:end], c=f'C{ch-1}', alpha=0.3, zorder=1)
+    
+# plot mec start line, if needed
+if hasattr(data.metadata, 'mec_start_sec'):
+    
+    mec_line = axl.axvline(data.metadata.mec_start_sec, ls='--', c='k', label='mec start')
+    fig.legend(handles=[mec_line], ncol=6, loc='upper right', bbox_to_anchor=(1, 0.97))    
+
+fig.suptitle(data.metadata.file.stem)
+ax.set_xlabel('Time [seconds]')
+
+au.make_scalebar(ax)
+# axarr[0, 0].set_ylim(-70, -10)
+# axarr[0, 0].set_ylim(-10, 30)
+
 
 #%% Step by step analysis
 
@@ -2535,7 +2585,7 @@ for file in baseline_files:
     time = loaded['time']
     baseline1 = loaded['base1']
     baseline2 = loaded['base2']
-    mec_start = mec_start
+    mec_start = loaded['mec_start']
     pair = loaded['pair']
     
     # normalize the data
@@ -2567,6 +2617,7 @@ for file in baseline_files:
         
 # sort and convert concatenated data
 maxtimes = min(600, maxtimes)
+mintimes = max(-200, mintimes)
 avg_times = np.linspace(mintimes, maxtimes, 1000)
 cellcolor = {'S':scolor, 'L':lcolor}
 
@@ -2585,7 +2636,7 @@ for axli, axsi, bases in zip(axl, axs, (base_n1, base_n2)):
         valid = [i for i, b in enumerate(bases[celltype]) if np.mean(
             np.logical_and(b(avg_times) < base_mode+base_std, 
                            b(avg_times) > base_mode-base_std)[~np.isnan(b(avg_times))] 
-            ) > 0.5 ]
+            ) > 0 ]
         
         base_avg = np.nanmean( [intp(avg_times) for i, intp in enumerate(bases[celltype]) if i in valid], axis=0)
         base_std = np.nanstd( [intp(avg_times) for i, intp in enumerate(bases[celltype]) if i in valid], axis=0)
@@ -2824,7 +2875,9 @@ for kind, table in lags_df.groupby('condensed_type'):
     res_s = stats.binomtest(sum(x>0 for x in points), len(points))
     ci = res_t.confidence_interval()
     
-    print(f'{kind}\tp_t:{res_t.pvalue:.2e} \tp_w:{res_w.pvalue:.2e} \tp_s:{res_s.pvalue:.2e} \t| mean = ({np.mean(points):.3f} ± [{ci.low:.3f}, {ci.high:.3f}])ms')
+    print(f'{kind}\tp_t:{res_t.pvalue:.2e} \tp_w:{res_w.pvalue:.2e} \tp_s:{res_s.pvalue:.2e}', end='\t| ')
+    print(f'mean = ({np.mean(points):.3f} ± [{ci.low:.3f}, {ci.high:.3f}])ms', end=' ')
+    print(f' (n = {len(points)})')
 
 # pairwise statistical tests
 pairs = ['LL', 'SS'], ['LL', 'LS'], ['SS', 'LS']
@@ -3028,7 +3081,7 @@ plt.grid(axis='y')
 data_dir = '/media/marcos/DATA/marcos/FloClock_data/data'
 savedir = Path('/media/marcos/DATA/marcos/FloClock_data/data/output/crossings')
 # data_dir = '/media/marcos/DATA/marcos/FloClock_data/data - mecamilamina'
-max_distance = 0.3 # in units of average period
+max_distance = 0.4 # in units of average period
 
 data_files = contenidos(data_dir, filter_ext='.abf')
 
@@ -3075,6 +3128,7 @@ for i, file in enumerate(data_files):
              tperiods2 = tperiods2,
              periods2 = periods2,
              )
+    
 #%% Analize crossings info
 import copy
  
@@ -3195,7 +3249,10 @@ for kind, points in all_lags.items():
     res_s = stats.binomtest(sum(x>0 for x in points), len(points))
     ci = res_t.confidence_interval()
     
-    print(f'{kind}\tp_t:{res_t.pvalue:.2e} \tp_w:{res_w.pvalue:.2e} \tp_s:{res_s.pvalue:.2e} \t| mean = ({np.mean(points):.3f} ± [{ci.low:.3f}, {ci.high:.3f}])ms')
+    print(f'{kind}\tp_t:{res_t.pvalue:.2e} \tp_w:{res_w.pvalue:.2e} \tp_s:{res_s.pvalue:.2e}', end='\t| ')
+    print(f'mean = ({np.mean(points):.3f} ± [{ci.low:.3f}, {ci.high:.3f}])ms', end=' ')
+    print(f' (n = {len(points)})')
+
 
 # pairwise statistical tests
 pairs = ['LL', 'SS'], ['LL', 'LS'], ['SS', 'LS']
@@ -3328,8 +3385,8 @@ import copy
 # load data
 xcorr_data_dir = Path('/media/marcos/DATA/marcos/FloClock_data/data/output/multi_cross_correlations')
 cross_data_dir = Path('/media/marcos/DATA/marcos/FloClock_data/data/output/crossings')
-pair_guide_file = data_dir.parent.parent / 'par_guide.xlsx'
-tpd_file = data_dir.parent.parent.parent / 'tiempos_post_diseccion' / 'info.xlsx'
+pair_guide_file = xcorr_data_dir.parent.parent / 'par_guide.xlsx'
+tpd_file = xcorr_data_dir.parent.parent.parent / 'tiempos_post_diseccion' / 'info.xlsx'
 
 LENGTH = 10 # must be one of the saved ones. That's probably [2, 10, 20, 50]
 
@@ -3355,11 +3412,11 @@ pair_guide = pair_guide.sample(frac=1, random_state=2)
 order = 'SS', 'LL', 'LS', 'SR', 'LR'
 # plt.rcParams["axes.prop_cycle"] = plt.cycler("color", [*plt.cm.Dark2.colors, *plt.cm.tab10.colors])
 
-fig_C, axdictC = plt.subplot_mosaic([[k] for k in order if 'R' not in k], sharex=True, sharey=True, constrained_layout=True, figsize=(6.4, 2.8))
-fig_X, axdictX = plt.subplot_mosaic([[k] for k in order if 'R' not in k], sharex=True, sharey=True, constrained_layout=True, figsize=(6.4, 2.8))
+fig_C, axdictC = plt.subplot_mosaic([[k] for k in order if 'R' not in k], sharex=True, sharey=True, constrained_layout=True, figsize=(6.4, 2.8*1.7))
+fig_X, axdictX = plt.subplot_mosaic([[k] for k in order if 'R' not in k], sharex=True, sharey=True, constrained_layout=True, figsize=(6.4, 2.8*1.7))
 
-fig_Ci, axdictCi = plt.subplot_mosaic([[k] for k in order], sharex=True, sharey=True, constrained_layout=True, figsize=(6.4, 4.3))
-fig_Xi, axdictXi = plt.subplot_mosaic([[k] for k in order], sharex=True, sharey=True, constrained_layout=True, figsize=(6.4, 4.3))
+fig_Ci, axdictCi = plt.subplot_mosaic([[k] for k in order], sharex=True, sharey=True, constrained_layout=True, figsize=(6.4, 4.3*1.7))
+fig_Xi, axdictXi = plt.subplot_mosaic([[k] for k in order], sharex=True, sharey=True, constrained_layout=True, figsize=(6.4, 4.3*1.7))
 
 # make colormaps
 sc = np.asarray(colors.to_rgba(scolor))
@@ -3376,7 +3433,10 @@ lcmap = colors.LinearSegmentedColormap.from_list('large', (lc*(1-bp) + black * b
 pcmap = colors.LinearSegmentedColormap.from_list('pair' , (pc*(1-bp) + black * bp, pc, pc*(1-wp) + white * wp))
 rcmap = colors.LinearSegmentedColormap.from_list('rand' , (str(1-bp), str(wp)))
 
-cmaps = {'SS':scmap, 'LL':lcmap, 'LS':pcmap, 'SR':rcmap, 'LR':rcmap}
+srcmap = colors.LinearSegmentedColormap.from_list('large', (sc, sc))
+lrcmap = colors.LinearSegmentedColormap.from_list('large', (lc, lc))
+
+cmaps = {'SS':scmap, 'LL':lcmap, 'LS':pcmap, 'SR':srcmap, 'LR':lrcmap}
 
 # Extract data from the saved correlations
 indexes = {k:0 for k in order} # save the index of the current file of each type
@@ -3457,24 +3517,25 @@ for title, axdict in zip(titles, [axdictXi, axdictCi]):
         ax.grid()
         ax.set_ylabel('lag [sec]')
         
-# print('saving...')
+print('saving...')
 
-# savename = '/media/marcos/DATA/marcos/FloClock pics/svgs for paper/Xcorr lags over time.svg'
-# fig_X.savefig(savename, dpi=300)
-# savename = '/media/marcos/DATA/marcos/FloClock pics/svgs for paper/crossing lags over time.svg'
-# fig_C.savefig(savename, dpi=300)
-# savename = '/media/marcos/DATA/marcos/FloClock pics/svgs for paper/Xcorr lags individuals.svg'
-# fig_Xi.savefig(savename, dpi=300)
-# savename = '/media/marcos/DATA/marcos/FloClock pics/svgs for paper/crossing lags individuals.svg'
-# fig_Ci.savefig(savename, dpi=300)
+savedir = Path('/media/marcos/DATA/marcos/FloClock pics/svgs for paper/fig S4 material V4')
+savename = savedir / 'Xcorr lags over time.svg'
+fig_X.savefig(savename, dpi=300)
+savename = savedir / 'crossing lags over time.svg'
+fig_C.savefig(savename, dpi=300)
+savename = savedir / 'Xcorr lags individuals.svg'
+fig_Xi.savefig(savename, dpi=300)
+savename = savedir / 'crossing lags individuals.svg'
+fig_Ci.savefig(savename, dpi=300)
 
 #%% Histograms of the means
 
 # load data
 xcorr_data_dir = Path('/media/marcos/DATA/marcos/FloClock_data/data/output/multi_cross_correlations')
 cross_data_dir = Path('/media/marcos/DATA/marcos/FloClock_data/data/output/crossings')
-pair_guide_file = data_dir.parent.parent / 'par_guide.xlsx'
-tpd_file = data_dir.parent.parent.parent / 'tiempos_post_diseccion' / 'info.xlsx'
+pair_guide_file = xcorr_data_dir.parent.parent / 'par_guide.xlsx'
+tpd_file = xcorr_data_dir.parent.parent.parent / 'tiempos_post_diseccion' / 'info.xlsx'
 
 LENGTH = 10 # must be one of the saved ones. That's probably [2, 10, 20, 50]
 
