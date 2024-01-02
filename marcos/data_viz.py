@@ -3529,11 +3529,16 @@ fig_Xi.savefig(savename, dpi=300)
 savename = savedir / 'crossing lags individuals.svg'
 fig_Ci.savefig(savename, dpi=300)
 
-#%% Histograms of the means
+#%% Hist and corr of the means
 
 # load data
-xcorr_data_dir = Path('/media/marcos/DATA/marcos/FloClock_data/data/output/multi_cross_correlations')
-cross_data_dir = Path('/media/marcos/DATA/marcos/FloClock_data/data/output/crossings')
+# xcorr_data_dir = Path('/media/marcos/DATA/marcos/FloClock_data/data/output/multi_cross_correlations')
+# cross_data_dir = Path('/media/marcos/DATA/marcos/FloClock_data/data/output/crossings')
+
+xcorr_data_dir = Path('/home/user/Documents/Doctorado/Fly clock/FlyClock_data/data/output/multi_cross_correlations')
+cross_data_dir = Path('/home/user/Documents/Doctorado/Fly clock/FlyClock_data/data/output/crossings')
+
+
 pair_guide_file = xcorr_data_dir.parent.parent / 'par_guide.xlsx'
 tpd_file = xcorr_data_dir.parent.parent.parent / 'tiempos_post_diseccion' / 'info.xlsx'
 
@@ -3608,3 +3613,26 @@ axarr[-1, 1].set_xlabel('lag [sec]')
 
 for ax in axarr[:, 0]:
     ax.set_ylabel('#counts')
+
+fig2, ax = plt.subplots(figsize=(5,5), constrained_layout=True)
+
+pearson_rs = {}
+for pair in order:
+    ax.plot(lagsC[pair], lagsX[pair], 'o', c=color_dict[pair])
+    pearson_r, _ = stats.pearsonr(lagsC[pair], lagsX[pair])
+    print(f'Pearson-r of {pair}: {pearson_r:.2f}')
+
+ax.set_xlabel('Threhsold crossing lag')
+ax.set_ylabel('Cross correlation lag')
+
+ax.plot([-1, 1], [-1, 1], '--k', zorder=1)
+
+ax.set_aspect('equal', 'box')
+ax.set_xlim(-0.33, 0.05)
+ax.set_ylim(-0.33, 0.05)
+
+all_lagsX = [l for lags in lagsX.values() for l in lags]
+all_lagsC = [l for lags in lagsC.values() for l in lags]
+pearson_r, _ = stats.pearsonr(all_lagsC, all_lagsX)
+
+print(f'\n Global pearson-r: {pearson_r}')

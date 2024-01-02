@@ -2160,7 +2160,8 @@ ax.axhline(period_mode*outlier_mode_proportion, ls='--', color='k')
 discrimination. To that end, we calculate the period variability for multiple 
 values of the threshold with one and tow pass outlier detection."""
 
-data_dir = '/media/marcos/DATA/marcos/FloClock_data/tiempos_post_diseccion'
+# data_dir = '/media/marcos/DATA/marcos/FloClock_data/tiempos_post_diseccion'
+data_dir = '/home/user/Documents/Doctorado/Fly clock/FlyClock_data/tiempos_post_diseccion'
 data_dir = Path(data_dir) / 'output' / 'frequency_time_dependency'
 info_dir = data_dir / 'periods_info.csv'
 
@@ -2207,6 +2208,7 @@ discrimination. To that end, we calculate the period variability for multiple
 values of the threshold with one and tow pass outlier detection."""
 
 data_dir = '/media/marcos/DATA/marcos/FloClock_data/tiempos_post_diseccion'
+# data_dir = '/home/user/Documents/Doctorado/Fly clock/FlyClock_data/tiempos_post_diseccion'
 data_dir = Path(data_dir) / 'output' / 'frequency_time_dependency'
 info_dir = data_dir / 'periods_info.csv'
 
@@ -2222,6 +2224,8 @@ P = np.polynomial.Polynomial
 fig, axarr = plt.subplots(2, 1, constrained_layout=True, figsize=(8,4), sharex=True)
 
 thresholds = np.linspace(1, 2, 20)
+all_props1 = []
+all_props2 = []
 for file in data_files:
     props1 = []
     props2 = []
@@ -2242,7 +2246,15 @@ for file in data_files:
     axarr[0].plot(thresholds, props1)
     axarr[1].plot(thresholds, props2)
     
-            
+    all_props1.append(props1)
+    all_props2.append(props2)
+    
+all_props1 = np.asarray(all_props1).mean(axis=0)
+all_props2 = np.asarray(all_props2).mean(axis=0)
+
+axarr[0].plot(thresholds, all_props1, 'k', lw=3)
+axarr[1].plot(thresholds, all_props1, 'k', lw=3)
+
 axarr[0].set_title(file.stem)
 axarr[0].set_ylabel('valid proportion\none pass')
 axarr[1].set_ylabel('valid proportion\ntwo passes')
@@ -2255,6 +2267,8 @@ axarr[1].set_xlabel('threshold')
 period trends. See for a few runs what values look right."""
 
 data_dir = '/media/marcos/DATA/marcos/FloClock_data/data'
+# data_dir = '/home/user/Documents/Doctorado/Fly clock/FlyClock_data/data'
+
 data_dir = Path(data_dir) / 'output' / 'frequency_time_dependency'
 
 outlier_mode_proportion = 1.6 #1.8 for normal runs
@@ -2636,6 +2650,8 @@ for f, _, m in zip(ordered_files[:count], ordered_indexes[:count], ordered_var[:
 
 # data_dir = '/media/marcos/DATA/marcos/FloClock_data/data'
 data_dir = '/media/marcos/DATA/marcos/FloClock_data/tiempos_post_diseccion'
+# data_dir = '/home/user/Documents/Doctorado/Fly clock/FlyClock_data/tiempos_post_diseccion'
+
 data_dir = Path(data_dir) / 'output' / 'frequency_time_dependency'
 
 info_dir = data_dir / 'periods_info.csv'
@@ -2705,10 +2721,13 @@ fig.legend(lines, outlier_mode_proportions, ncols=len(outlier_mode_proportions),
 
 # data_dir = '/media/marcos/DATA/marcos/FloClock_data/data'
 data_dir = '/media/marcos/DATA/marcos/FloClock_data/tiempos_post_diseccion'
+# data_dir = '/home/user/Documents/Doctorado/Fly clock/FlyClock_data/tiempos_post_diseccion'
 data_dir = Path(data_dir) / 'output' / 'frequency_time_dependency'
 
 outlier_mode_proportion = 1.8 #1.8 for normal runs
-KIND = 'L'  # 'L', 'S', or None
+KIND = 'S'  # 'L', 'S', or None
+
+COLOR_INVALID = '#db4a4a'
 
 info_dir = data_dir / 'periods_info.csv'
 data_files = contenidos(data_dir, filter_ext='.npz')
@@ -2765,14 +2784,17 @@ valid = np.asarray(valids)
 
 ### Plot and process data
 
+color = scolor if KIND=='S' else lcolor
+color = color if KIND is not None else 'C2'
+
 # Plot data
-ax1.plot(t[valid], p[valid], '.', c='C0', rasterized=True)
-ax1.plot(t[~valid], p[~valid], '.', c='C1', rasterized=True)
+ax1.plot(t[valid], p[valid], '.', c=color, rasterized=True, ms=3)
+ax1.plot(t[~valid], p[~valid], '.', c=COLOR_INVALID, rasterized=True, ms=3)
 # ax1.plot(t[valid], p[valid], '.', c='C0', alpha=0.02)
 
 # Plot data on normalized time [0, 1]
-ax2.plot(t_norm[valid], p[valid], '.', c='C0', rasterized=True)
-ax2.plot(t_norm[~valid], p[~valid], '.', c='C1', rasterized=True)
+ax2.plot(t_norm[valid], p[valid], '.', c=color, rasterized=True, ms=3)
+ax2.plot(t_norm[~valid], p[~valid], '.', c=COLOR_INVALID, rasterized=True, ms=3)
 
 # Average data in small windows
 steps = 20
@@ -2787,7 +2809,7 @@ for t0, t1 in zip(time_bins, time_bins[1:]):
     valid_count = sum(np.logical_and(where, valid))
     tt = (t0+t1)/2
 
-    ax3.plot(tt, valid_count/total_count, 'o', c='C2')
+    ax3.plot(tt, valid_count/total_count, 'o', c=color)
     ax5.plot(tt, total_count, 'x', c='C3')
     
     # For normalized time
@@ -2800,7 +2822,7 @@ for t0, t1 in zip(time_bins, time_bins[1:]):
     valid_count = sum(np.logical_and(where, valid))
     tt = (t0+t1)/2
 
-    ax4.plot(tt, valid_count/total_count, 'o', c='C2')
+    ax4.plot(tt, valid_count/total_count, 'o', c=color)
     ax6.plot(tt, total_count, 'x', c='C3')
     
 ylims3 = ax3.get_ylim()
@@ -2828,7 +2850,8 @@ ax3.set_ylim(0, 1.05)
 
 #%% Quantify baselines
 
-data_dir = '/media/marcos/DATA/marcos/FloClock_data/tiempos_post_diseccion'
+# data_dir = '/media/marcos/DATA/marcos/FloClock_data/tiempos_post_diseccion'
+data_dir = '/home/user/Documents/Doctorado/Fly clock/FlyClock_data/tiempos_post_diseccion'
 data_dir = Path(data_dir) / 'output' / 'baseline_time_dependency'
 
 info_dir = data_dir / 'baselines_info.csv'
@@ -2844,32 +2867,38 @@ info['tpd_sec'] = info.tpd * 60
 fig, (ax1, ax2, axh) = plt.subplots(1, 3, constrained_layout=True, 
                                     figsize=[12, 3.2],
                                     width_ratios=[1, 1.6, 0.4], sharey=True)
-mean_baseline = []
+mean_baseline = {}
 stimes, sbaselines = [], []
 ltimes, lbaselines = [], []
 for file in data_files:
     loaded = np.load(file)
     
-    mean_baseline.append(loaded['baselines'].mean())
+    celltype = info.loc[file.stem].type
+    tpd = info.loc[file.stem].tpd
+    
+    mean_baseline[file.stem] = loaded['baselines'].mean()
     times = loaded['btimes']/60 + tpd
     baselines = loaded['baselines']
     
     times = times[baselines < -20]
     baselines = baselines[baselines < -20]
     
-    tpd = info.loc[file.stem].tpd
-    if info.loc[file.stem].type=='S':
+    if celltype =='S':
         stimes.extend(times)
         sbaselines.extend(baselines)
     else:
         ltimes.extend(times)
         lbaselines.extend(baselines)
     
-    thecolor = scolor if info.loc[file.stem].type=='S' else lcolor
-    thezorder = 2 if info.loc[file.stem].type=='S' else 1.9
+    thecolor = scolor if celltype=='S' else lcolor
+    thezorder = 2 if celltype=='S' else 1.9
     ax2.plot(times, baselines, c=thecolor, zorder=thezorder)
     
-info['baseline'] = mean_baseline
+    if any(baselines<-80):
+        print(file.name, celltype)
+    
+mean_baseline = pd.DataFrame.from_dict(mean_baseline, orient='index', columns=['baseline'])
+info = info.join(mean_baseline)
 
 colors_list = [scolor if row.type=='S' else lcolor for _, row in info.iterrows()]
 ax1.scatter(info.tpd + info.duration/2, info.baseline, c=colors_list)
