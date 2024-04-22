@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 from matplotlib import cm
 import pandas as pd
 import numpy as np
-from scipy import interpolate, signal
+from scipy import interpolate, signal, optimize
 
 from scipy.ndimage import gaussian_filter1d
 from scipy.signal import find_peaks
@@ -24,7 +24,9 @@ import pyabf
 
 #%% Check out one file
 
-BASE_DIR = '/media/marcos/DATA/marcos/FloClock_data/phase_response_curve'
+# BASE_DIR = '/media/marcos/DATA/marcos/FloClock_data/phase_response_curve'
+BASE_DIR = '/home/user/Documents/Doctorado/Fly clock/FlyClock_data/phase_response_curve'
+
 files = contenidos(BASE_DIR, filter_ext='.abf')
 
 file = files[-2]
@@ -57,7 +59,9 @@ ax.set_xlim(times.min(), times.max())
 #%% Cut sweeps at stimuli to line them all up (check if we have sufficiently scanned everything)
 
 
-BASE_DIR = '/media/marcos/DATA/marcos/FloClock_data/phase_response_curve'
+# BASE_DIR = '/media/marcos/DATA/marcos/FloClock_data/phase_response_curve'
+BASE_DIR = '/home/user/Documents/Doctorado/Fly clock/FlyClock_data/phase_response_curve'
+
 files = contenidos(BASE_DIR, filter_ext='.abf')
 
 file = files[-5]
@@ -90,6 +94,79 @@ for i in abf.sweepList:
 
 # ax.set_xlabel('time [sec]')
 # ax.set_xlim(times.min(), times.max())
+
+
+
+#%% Estimate the relaxation time
+
+
+# BASE_DIR = '/media/marcos/DATA/marcos/FloClock_data/phase_response_curve'
+BASE_DIR = '/home/user/Documents/Doctorado/Fly clock/FlyClock_data/phase_response_curve'
+
+files = contenidos(BASE_DIR, filter_ext='.abf')
+
+file = files[-5]
+
+# Load data
+abf = pyabf.ABF(file)
+
+# fig, ax = plt.subplots()
+
+def exp(t, A, t0, l, c):
+    return A * np.exp(-(t-t0)/l) + c
+
+# Set sweep and channel, extract tmes and data
+relaxation = []
+relaxation_error = []
+for i in abf.sweepList:
+    # load sweep and unpack data
+    abf.setSweep(sweepNumber=i)
+    times = abf.sweepX
+    data = abf.sweepY
+    perturbation = abf.sweepC
+    
+    # find points where perturbations happened and rewind tree datapoints
+    if perturbation.mean() > 0:
+        perturbation_indexes = np.nonzero(np.diff(perturbation) > 0)[0] - 3
+    else:
+        perturbation_indexes = np.nonzero(np.diff(perturbation) < 0)[0] - 3
+    
+    fig, axarr = plt.subplots(3,3, constrained_layout=True)
+    # plot the perturbations
+    for start, ax in zip(perturbation_indexes, axarr.flat):
+        # find the interesting bit
+        end = start+5000
+        interval = slice(start, end, 10)
+        bit = data[interval]
+        tbit = times[interval] - times[start]
+        
+        # find the peak
+        peak = signal.find_peaks(-bit, height=75, prominence=5)[0][0]
+        
+        # fit a curve
+        p0 = [bit[peak]-bit[peak:].max(), tbit[peak], 0.1, bit[peak:].max()]
+        popt, pcov = optimize.curve_fit(exp, tbit[peak:], bit[peak:], p0)
+        
+        relax = popt[2]
+        relax_err = np.sqrt(np.diag(pcov))[2]
+        
+        relaxation.append(relax)
+        relaxation_error.append(relax_err)
+        
+        # plot
+        ax.plot(tbit, bit)
+        ax.plot(tbit[peak:], exp(tbit[peak:], *popt), 'r--')
+        ax.plot(tbit[peak:], exp(tbit[peak:], *p0), 'k--')
+        ax.plot(tbit[peak], bit[peak], 'ok')
+        
+        ax.set_title(f'{relax:3f}')
+
+relaxation = np.asarray(relaxation)
+relaxation_error = np.asarray(relaxation_error)
+
+mean_relax = np.average(relaxation, weights = 1/relaxation_error**2)
+
+print(f'Relaxation time = {mean_relax:.4f}sec')
 
 #%% Cut sweeps at oscillations and line them up
 
@@ -241,7 +318,7 @@ BASE_DIR = '/media/marcos/DATA/marcos/FloClock_data/phase_response_curve'
 BASE_DIR = '/home/user/Documents/Doctorado/Fly clock/FlyClock_data/phase_response_curve'
 files = contenidos(BASE_DIR, filter_ext='.abf')
 
-file = files[19]
+file = files[40]
 threshold = 10
 
 # Load data
@@ -423,8 +500,8 @@ def my_find_peaks(times, data, period_percent=0.4, prominence=3):
     
     return p_inx
 
-BASE_DIR = Path('/media/marcos/DATA/marcos/FloClock_data/phase_response_curve')
-# BASE_DIR = '/home/user/Documents/Doctorado/Fly clock/FlyClock_data/phase_response_curve'
+# BASE_DIR = Path('/media/marcos/DATA/marcos/FloClock_data/phase_response_curve')
+BASE_DIR = '/home/user/Documents/Doctorado/Fly clock/FlyClock_data/phase_response_curve'
 files = contenidos(BASE_DIR, filter_ext='.abf')
 
 file = files[26] # using 40, 39, 38, 36, 35, 34, 33, 32, 30, 29, 26
@@ -801,6 +878,394 @@ for ax, method_dir in zip(axarr, methods_dirs):
 ax.set_ylim(-1, 1)
 ax.set_xlim(0, 1)
 ax.set_xlabel('phase')
+
+
+#%% Estimate the relaxation time only in perturbations away from pulses
+
+""" This is hacked together from the "Get PRC" and "Estimate relaxatoin times"
+sections, so it likely has a bunch of extra unneeded code."""
+
+
+# BASE_DIR = Path('/media/marcos/DATA/marcos/FloClock_data/phase_response_curve')
+BASE_DIR = '/home/user/Documents/Doctorado/Fly clock/FlyClock_data/phase_response_curve'
+files = contenidos(BASE_DIR, filter_ext='.abf')
+
+file = files[36] # using 40, 39, 38, 36, 35, 34, 33, 32, 30, 29, 26
+threshold = 5
+METHOD = 'rising' # one of 'rising', 'falling' or 'peaks'
+SMOOTH = True # decides if we should do a harsh lowpass filter on the signal
+
+
+def lowpass_filter(times, data, filter_order, frequency_cutoff):
+    
+    # some filter methods leave behind nans in the data, that raises a LinAlgError
+    nan_locs = np.isnan(data)
+            
+    sampling_rate = 1/(times[1]-times[0])
+    sos = signal.butter(filter_order, frequency_cutoff, btype='lowpass', output='sos', fs=sampling_rate)
+    filtered = signal.sosfiltfilt(sos, data[~nan_locs])
+    
+    return filtered
+    
+
+def highpass_filter(times, data, filter_order, frequency_cutoff):
+    
+    # some filter methods leave behind nans in the data, that raises a LinAlgError
+    nan_locs = np.isnan(data)
+            
+    sampling_rate = 1/(times[1]-times[0])
+    sos = signal.butter(filter_order, frequency_cutoff, btype='highpass', output='sos', fs=sampling_rate)
+    filtered = signal.sosfiltfilt(sos, data[~nan_locs])
+    
+    return filtered
+
+
+def my_find_peaks(times, data, period_percent=0.4, prominence=3):
+    
+    ## first pass, with threshold 0mv
+    p_inx, _ = find_peaks(data, height=0)
+    
+    ## second pass, with threshold given by otsu
+    # threshold = Processors.get_threshold(peaks)
+    # p_inx, _ = signal.find_peaks(ch, height=threshold)
+    # peaks = ch.values[p_inx]
+    t_peaks = times[p_inx]
+
+    ## third pass, with minimum distance between peaks
+    counts, bins = np.histogram(np.diff(t_peaks))
+    bin_centers = bins[:-1] + np.diff(bins) / 2
+    period_mode = bin_centers[ np.argmax(counts) ]
+    distance_points = int(period_mode * period_percent / (times[1] - times[0]))
+    # p_inx, _ = signal.find_peaks(ch, height=threshold, distance=distance_points)
+    p_inx, _ = find_peaks(data, distance=distance_points, prominence=prominence)
+    
+    return p_inx
+
+
+def exp(t, A, t0, l, c):
+    return A * np.exp(-(t-t0)/l) + c
+
+# Load data
+abf = pyabf.ABF(file)
+print('Running', file.stem)
+
+# to prime it for the first sweep
+times = [0]
+all_time = []
+all_data = []
+all_pert = []
+
+for sweep in abf.sweepList:
+    print('Processing sweep', sweep)
+
+    # first gaussian filter
+    abf.setSweep(sweep)
+    times = abf.sweepX + times[-1]
+    data = abf.sweepY
+    
+    all_time.append(times)
+    all_data.append(data)
+    all_pert.append(abf.sweepC)
+
+time = np.concatenate(all_time)
+data = np.concatenate(all_data)
+perturbation = np.concatenate(all_pert)
+
+# filter data a bit
+data_lp = lowpass_filter(time, data, filter_order=2, frequency_cutoff=10)
+data_lp = data_lp[::10]
+time = time[::10]
+data = data[::10]
+perturbation = perturbation[::10]
+data_hp = highpass_filter(time, data_lp, filter_order=2, frequency_cutoff=0.1)
+if SMOOTH:
+    data_hp = lowpass_filter(time, data_hp, filter_order=2, frequency_cutoff=2)
+
+# plot
+fig_main = plt.figure(figsize=[17.69,  7.29], constrained_layout=True)
+fig, fig2 = fig_main.subfigures(1,2, width_ratios=[3,1])
+ax, ax2, axp = fig.subplots(3, sharex=True)
+ax_prc = fig2.subplots()
+
+ax.plot(time, data, label='raw')
+ax.plot(time, perturbation + data.mean(), label='perturb.')
+ax.plot(time, data_lp, label='lowpass $f_c$=10')
+ax.plot(time, lowpass_filter(time, data_lp, filter_order=2, frequency_cutoff=2), label='lowpass $f_c$=2')
+
+ax2.plot(time, data_hp, label='detrended')
+ax2.plot(time, perturbation + data_hp.mean(), label='perturb.')
+
+raw_data = data
+data = data_hp
+# find peaks and edge crossings
+
+peaks = my_find_peaks(time, data)
+ax2.plot(time[peaks], data[peaks], 'o', label='peaks')
+
+mean_period_in_points = round(np.diff(peaks).mean())
+
+# find crossing points
+rising_edge = []
+falling_edge = []
+filtered_peaks = []
+prev_peak = -np.inf
+for peak in peaks:
+    
+    # skip maxima that are too low
+    if data[peak] < threshold:
+        continue
+    
+    # skip maxima that are too close together
+    if peak - prev_peak < mean_period_in_points / 2:
+        continue
+    
+    # find rising edge point (before peak)
+    interval = data[:peak]
+    raising = np.nonzero(interval < threshold)[0][-1]
+    
+    # find falling edge point (after peak)    
+    starting_point = min(peak + int(mean_period_in_points / 2), len(data))
+    interval = data[:starting_point]
+    falling = np.nonzero(interval > threshold)[0][-1]
+    
+    rising_edge.append(raising)
+    falling_edge.append(falling)
+    filtered_peaks.append(peak)
+    prev_peak = peak
+
+rising_edge = np.asarray(rising_edge)
+falling_edge = np.asarray(falling_edge)
+peaks = np.asarray(filtered_peaks)
+
+### Choose which event to use as reference
+if METHOD == 'rising':
+    event_index_array = rising_edge # one of rising_edge, falling_edge, peaks
+elif METHOD == 'falling':
+    event_index_array = falling_edge # one of rising_edge, falling_edge, peaks
+elif METHOD == 'peaks':
+    event_index_array = peaks # one of rising_edge, falling_edge, peaks
+else:
+    raise ValueError('"METHOD" has to be one of "rising", "falling" or "peaks"')
+
+# plot peaks and threshold crossings
+ax2.plot(time[peaks], data[peaks], 'k.', label='filtered_peaks')
+ax2.plot(time[rising_edge], data[rising_edge], 'o', label='edge crossings')
+
+# find cycles with a perturbation
+pert_inxs,  = np.where(np.diff(perturbation) < -1)
+pert_moments = time[pert_inxs]
+ax2.plot(pert_moments, perturbation[pert_inxs], 'kx')
+
+cross_moments = time[event_index_array]
+
+# filter out cases where we can't detect the cycle because the perturbation fell right on it
+cross_period = np.diff(cross_moments)
+period_times = cross_moments[:-1] + cross_period/2
+valid = au.find_valid_periods(period_times, cross_period, passes=2, threshold=1.6)
+
+perturbed_cylces = []
+perturb_phase = []
+perturb_indexes = []
+invalid_perturbed_cylces = []
+try:
+    for i, (e1, e2, v) in enzip(event_index_array, event_index_array[1:], valid):
+        # find the first perturbation after the current crossing
+        for pert in pert_inxs:
+            if pert > e1:
+                break
+        else:
+            raise StopIteration()
+        
+        # if te perturbation happened before the next peak, store it
+        if pert <= e2:
+            
+            # keep it only if the period in question was valid
+            if v:
+                perturbed_cylces.append(i)
+                
+                # get phase of perturbation
+                phase = (pert-e1) / (e2-e1) # here dividing indexes or actual time values is identical
+                perturb_phase.append(phase)
+                perturb_indexes.append(pert)
+            else:
+                invalid_perturbed_cylces.append(i)
+            
+except StopIteration:
+    # this happens if there are no more perturbations to find
+    pass
+
+# mark the cycles that have a perturbation
+for inx in perturbed_cylces:
+    start = event_index_array[inx]
+    end = event_index_array[inx+1]
+    ax2.plot(time[start:end], data_hp[start:end], 'r')
+
+for inx in invalid_perturbed_cylces:
+    start = event_index_array[inx]
+    end = event_index_array[inx+1]
+    # ax2.plot(time[start:end], data_hp[start:end], 'r')
+    ax2.fill_betweenx([data_hp.min(), data_hp.max()], time[start], time[end], color='0.7', zorder=1)
+
+# plot one extra patch to label it
+ax2.fill_betweenx([data_hp.min(), data_hp.max()], time[start], time[end], color='0.7', zorder=1, label='invalid')
+
+for pi, ph in zip(pert_inxs, perturb_phase):
+    ax2.text(time[pi], perturbation[pi]+0.5, f'{ph:.2f}')
+
+# plot PRC
+
+ax.set_title('Time series and analysis')
+axp.set_xlabel('Time [sec]')
+ax.set_ylabel('mV')
+ax2.set_ylabel('detrended signal [mV]')
+axp.set_ylabel('periods [s]')
+
+ax.legend()
+ax2.legend()
+axp.legend()
+axp.grid()
+ax_prc.legend()
+
+# plot valid cycles aligned at start of the cycle
+keep_perturbation = []
+for i, (inx, pert_inx, pert_phase) in enzip(perturbed_cylces, perturb_indexes, perturb_phase):
+    start = event_index_array[inx]
+    end = event_index_array[inx+1]
+    
+    phase = (time[start:end] - time[start]) / (time[end] - time[start])
+    
+    # ax_prc.plot(time[start:end] - time[start], raw_data[start:end])
+    ax_prc.plot(phase, raw_data[start:end])
+    ax_prc.plot(pert_phase, raw_data[pert_inx], 'ko', zorder=3)
+
+    if 0.3 < pert_phase < 0.8:
+        keep_perturbation.append(i)
+
+fig, axarr = plt.subplots(4,3, figsize=[16.03,  7.6 ])
+
+relaxation = []
+relaxation_error = []
+cycle_duration = []
+for j, i in enumerate(keep_perturbation):
+    ax = axarr.flat[j % axarr.size]
+    
+    inx = perturbed_cylces[i]
+    pert_inx = perturb_indexes[i]
+    
+    # define some things about the cycle
+    start = event_index_array[inx]
+    end = event_index_array[inx+1]
+    pert_moment = time[pert_inx] - time[start]
+    
+    # grab only the bit we are interested in
+    bit = raw_data[pert_inx: pert_inx+400]
+    tbit = time[pert_inx: pert_inx+400] - time[pert_inx]
+
+    # find the peak
+    peak = signal.find_peaks(-bit, prominence=5)[0][0]
+
+    # fit a curve
+    p0 = [bit[peak]-bit[peak:].max(), tbit[peak], 0.1, bit[peak:].max()]
+    popt, pcov = optimize.curve_fit(exp, tbit[peak:], bit[peak:], p0)
+
+    relax = popt[2]
+    relax_err = np.sqrt(np.diag(pcov))[2]
+
+    relaxation.append(relax)
+    relaxation_error.append(relax_err)
+    cycle_duration.append(time[end] - time[start])
+
+    # plot
+    offset =  time[pert_inx] - time[start]
+    ax.plot(time[start:end] - time[start], raw_data[start:end])
+    ax.plot(tbit + offset, bit)
+    ax.plot(pert_moment, raw_data[pert_inx], 'ro')
+
+    ax.plot(tbit[peak:] + offset, exp(tbit[peak:], *p0), '--', c='0.7')
+    ax.plot(tbit[peak:] + offset, exp(tbit[peak:], *popt), 'k--')    
+    ax.plot(tbit[peak] + offset, bit[peak], 'ok')
+
+    ax.set_title(f'{relax:3f}')
+
+
+output_dir = file.parent / 'output' / 'relaxation_times'
+savefile = output_dir / file.stem
+np.savez(savefile, 
+         relaxation = relaxation,
+         relaxation_error = relaxation_error,
+         cycle_duration = cycle_duration
+         )
+
+#%% Analize relaxation time data
+
+
+# BASE_DIR = Path('/media/marcos/DATA/marcos/FloClock_data/phase_response_curve')
+BASE_DIR = Path('/home/user/Documents/Doctorado/Fly clock/FlyClock_data/phase_response_curve')
+data_dir = BASE_DIR / 'output' / 'relaxation_times'
+files = contenidos(data_dir, filter_ext='.npz')
+
+max_relax = 0.4
+
+def wheighted_mean(num, err):
+    if num.shape != err.shape:
+        return num.mean()
+    else:
+        return np.average(num, weights = 1/err**2)
+
+layout = [['a', 'b'], ['a', 'c']]
+fig, axdict  = plt.subplot_mosaic(layout, constrained_layout=True)
+ax1, ax2, ax3 = [axdict[l] for l in'abc']
+
+relaxation_times = []
+relaxation_times_normalized = []
+for i, file in enumerate(files):
+    loaded = np.load(file)
+    relax = loaded['relaxation']
+    dur = loaded['cycle_duration']
+    err = loaded['relaxation_error']
+    
+    # filter outliers
+    dur = dur[relax<0.4]
+    relax = relax[relax<0.4]
+    
+    # call out outlier runs
+    if any(r>0.2 for r in relax):
+        print('Run with high relaxation times:', file.stem)
+    
+    # scatter plot
+    mean_relax = wheighted_mean(relax, err)
+    ax1.plot(dur, relax, '.', c=f'C{i}')
+    ax1.plot(dur.mean(), mean_relax, 'o', c=f'C{i}')
+    ax1.set_xlabel('cycle duration')
+    ax1.set_ylabel('relaxaion time')
+    
+    # histograms
+    ax2.hist(relax, alpha=0.3, fc=f'C{i}')
+    ax2.plot(mean_relax, 10, 'v', c=f'C{i}')
+    ax2.set_xlabel('relaxaion time')
+    
+    # normalized histograms
+    mean_relax_norm =  wheighted_mean(relax/dur, err)
+    ax3.hist(relax/dur, alpha=0.3, fc=f'C{i}')
+    ax3.plot(mean_relax_norm, 10, 'v', c=f'C{i}')
+    ax3.set_xlabel('normalized relaxaion time')
+    
+    # save data for a boxplot
+    relaxation_times.append(relax)
+    relaxation_times_normalized.append(relax/dur)
+    
+
+fig, (axs1, axs2) = plt.subplots(1, 2, constrained_layout=True)
+
+
+# plot individual runs
+file_inx = find_numbers(cross_file.stem)[0]
+kde = stats.gaussian_kde(lag_points)
+max_val = kde(lag_points).max()
+
+axdict[row.par].plot(np.random.normal(1+file_inx, kde(lag_points)/max_val/8, size=len(lag_points)), 
+                     lag_points, 
+                     '.', alpha=0.2, rasterized=True)
 
 
 #%%

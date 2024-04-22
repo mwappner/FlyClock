@@ -10,6 +10,7 @@ import matplotlib.pyplot as plt
 from matplotlib.collections import LineCollection
 from scipy import stats
 # from matplotlib.colors import ListedColormap, BoundaryNorm
+import pandas as pd
 
 from PIL import Image as pil_image
 from numbers import Number
@@ -1360,3 +1361,112 @@ def clear_frame(ax=None, hidespine=True):
         for spine in ax.spines.values(): 
             spine.set_visible(False) 
 
+
+# Scatter plots where the width of the plot is given by the estimated PDF
+
+def kde_scatter(i, x, horizontal_scale=0.1, ax=None, alpha=0.2, rasterized=None, orientation='vertical', **kw):
+    """
+    Make a scatter plot for all the values in x. The horizontal coordinate is 
+    given by the value i, the vertical coordinate by the value of x. Every 
+    point is randomly offset horizontally. The offset ammount is randomly 
+    chosen from a normal distribution with a scale that reflects the value of 
+    the estimated density function of x at that point. The density function of
+    x is estimated using a gaussian kernel density estimator. The overall 
+    effect is that, for sufficiently large samplesizes, the scattered cloud has
+    a shape that resembles that of the (estiamted) density function.
+
+    Parameters
+    ----------
+    i : float
+        Horizontal coordinate around which the scatter cloud will generate.
+    x : array-like
+        Data to generate the scatter plot.
+    horizontal_scale : float, optional
+        Decides how wide each scattered cloud should be. Assuming this function 
+        will be called multiple times and that the values of i will be 
+        increasing integers each time, 0.1 is a good value to generate decently
+        sized clouds. Lower values produce noarrower clouds and vice-versa. The
+        default is 0.1.
+    ax : matplotlib Axes or None, optional
+        Axes onto which to plot the scatter plot. If ax is None, the current 
+        active axis is selected. This does not open a figure if none is open,
+        so you will have to do that yourself. The default is None.
+    alpha : float in [0, 1], optional
+        Alpha value  (transparency) of the plotted dots. When plotting multiple 
+        points, using an alpha value lower than one is recommended, to prevent
+        outliers from distorting the shape of the distribution by chance. The 
+        default is 0.2.
+    rasterized : Bool or None, optional
+        Whether to rasterize the resulting image. When exporting figures as 
+        vector images, if the iamge has too many points, editing the resulting 
+        file cna be hard. In such cases, it may be better to rasterize the 
+        scatter plot and make sure to save it with a high dpi. If rasterized is
+        None, then the plot will be rasterized when there are more than 100 
+        points in the dataset. The default is None.
+    orientation : 'horizontal' or 'verical', optional
+        Decides if the scatter plot extends horizontally or vertically, similar
+        to the `vert` argument in matplotlib.pyplot.boxplot. Detault is 
+        'vertical'.
+    *kw : 
+        Other keword arguments to be passed to the plotting function.
+
+    Returns
+    -------
+    None.
+
+    """
+    
+    assert orientation in ('horizontal', 'vertical')
+    
+    x = np.asarray(x)
+    y = x[~np.isnan(x)]
+    
+    kde = stats.gaussian_kde(y) if len(y)>1 else (lambda y: np.array([1]))
+    max_val = kde(y).max()
+        
+    if ax is None:
+        ax = plt.gca()
+    
+    # rastrize image if there are too many points
+    if rasterized is None:
+        rasterized = x.size>100
+    
+    horiz, vert = np.random.normal(i, kde(y)/max_val * horizontal_scale, size=len(y)), y
+    if orientation == 'horizontal':
+        horiz, vert = vert, horiz
+    
+    ax.plot(horiz, vert, '.', alpha=alpha, rasterized=rasterized, **kw)
+
+    
+def kde_multi_scatter(data, horizontal_scale=0.1, ax=None, alpha=0.2, rasterized=None, orientation='vertical', **kw):
+    """
+    A set of measurements using the kde_scatter method. Data should be either 
+    an itnerable where each element is a dataset, a dictionary or a pandas
+    DataFrame. This function will repeatedly call kde_scatter for each element
+    in the iterable, column in the dataframe or entry in the dictionary. In the 
+    latter two cases the function will also rename the horizontal axis to 
+    reflect the category names in the DataFrame or dictionary.
+
+    See kde_scatter for a description of the other parameters.
+    """
+    
+    if isinstance(data, dict):
+        values = data.values()
+        names = list(data.keys())
+    elif isinstance(data, pd.DataFrame):
+        values = data.values.T
+        names = data.columns
+    else:
+        values = data
+        names = None
+    
+    if ax is None:
+        ax = plt.gca()
+    
+    for i, x in enumerate(values):
+        kde_scatter(i, x, horizontal_scale, ax, alpha, rasterized, **kw)
+        
+    if names is not None:
+        positions = list(range(len(values)))
+        ax.set_xticks(positions)
+        ax.set_xticklabels(names)
