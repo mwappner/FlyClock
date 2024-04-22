@@ -17,7 +17,7 @@ from scipy import interpolate, signal, optimize
 from scipy.ndimage import gaussian_filter1d
 from scipy.signal import find_peaks
 
-from utils import contenidos, find_point_by_value, calc_mode, sort_by, enzip, smooth
+from utils import contenidos, find_point_by_value, calc_mode, sort_by, enzip, smooth, kde_scatter
 import analysis_utils as au
 
 import pyabf
@@ -1212,9 +1212,9 @@ def wheighted_mean(num, err):
     else:
         return np.average(num, weights = 1/err**2)
 
-layout = [['a', 'b'], ['a', 'c']]
+layout = [['a', 'b', 'e'], ['a', 'c', 'f']]
 fig, axdict  = plt.subplot_mosaic(layout, constrained_layout=True)
-ax1, ax2, ax3 = [axdict[l] for l in'abc']
+ax1, ax2, ax3, axs1, axs2 = [axdict[l] for l in'abcef']
 
 relaxation_times = []
 relaxation_times_normalized = []
@@ -1244,30 +1244,32 @@ for i, file in enumerate(files):
     ax2.plot(mean_relax, 10, 'v', c=f'C{i}')
     ax2.set_xlabel('relaxaion time')
     
+    # cloud
+    kde_scatter(i+1, relax, horizontal_scale=0.1, ax=axs1, alpha=1, 
+                mec=None, c=f'C{i}')    
+    
     # normalized histograms
     mean_relax_norm =  wheighted_mean(relax/dur, err)
     ax3.hist(relax/dur, alpha=0.3, fc=f'C{i}')
     ax3.plot(mean_relax_norm, 10, 'v', c=f'C{i}')
     ax3.set_xlabel('normalized relaxaion time')
     
+    # normalized cloud
+    kde_scatter(i+1, relax/dur, horizontal_scale=0.1, ax=axs2, alpha=1, 
+                mec=None, c=f'C{i}')
+    
     # save data for a boxplot
     relaxation_times.append(relax)
     relaxation_times_normalized.append(relax/dur)
-    
 
-fig, (axs1, axs2) = plt.subplots(1, 2, constrained_layout=True)
+axs1.boxplot(relaxation_times, showfliers=False, medianprops={'color':'k'})
+axs2.boxplot(relaxation_times_normalized, showfliers=False, medianprops={'color':'k'})
 
+axs1.set_xlabel('run number')
+axs1.set_ylabel('relaxation time')
 
-# plot individual runs
-file_inx = find_numbers(cross_file.stem)[0]
-kde = stats.gaussian_kde(lag_points)
-max_val = kde(lag_points).max()
-
-axdict[row.par].plot(np.random.normal(1+file_inx, kde(lag_points)/max_val/8, size=len(lag_points)), 
-                     lag_points, 
-                     '.', alpha=0.2, rasterized=True)
-
-
+axs2.set_xlabel('run number')
+axs2.set_ylabel('normalized relaxation time')
 #%%
 
 file = '/media/marcos/DATA/marcos/FloClock_data/Raw data preps con ojos/14320023.abf'
