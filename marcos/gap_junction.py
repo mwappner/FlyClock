@@ -63,6 +63,7 @@ files = contenidos(BASE_DIR)
 runs = contenidos(files[pair_type])
 file = contenidos(runs[run_nr], filter_ext='.abf', sort='age')[-1]
 
+
 # Load data
 abf = pyabf.ABF(file)
 
@@ -497,4 +498,3 @@ for name, vals in zip(names, (same_vals, diff_vals)):
         print('\t\t global :: pval =', f'{res_k.pvalue:.3e}')
 
     print()
-

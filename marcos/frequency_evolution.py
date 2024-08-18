@@ -10,14 +10,15 @@ Created on Thu Apr 20 18:05:25 2023
 from pathlib import Path
 
 import matplotlib.pyplot as plt
-from matplotlib import cm, colors
+from matplotlib import cm, colors, collections
+
 import pandas as pd
 import numpy as np
-from scipy import interpolate
-from scipy import stats
+from scipy import interpolate, stats, optimize
 from statsmodels.stats.weightstats import DescrStatsW
 
-from utils import contenidos, find_point_by_value, calc_mode, sort_by, cprint, clear_frame, enzip
+from utils import contenidos, find_point_by_value, calc_mode, sort_by, cprint
+from utils import smooth, clear_frame, enzip, kde_scatter
 import analysis_utils as au
 
 scolor = '#d06c9eff'
@@ -28,7 +29,7 @@ import pyabf
 
 # Load data
 data_dir = '/media/marcos/DATA/marcos/FloClock_data/tiempos_post_diseccion'
-file_inx = 9
+file_inx = 3
 
 data_files = contenidos(data_dir, filter_ext='.abf')
 
@@ -49,9 +50,9 @@ for ch_i, ax_pair in zip(abf.channelList,  np.atleast_2d(axarr)):
     ch = abf.sweepY
       
     ax_left, ax_right = ax_pair
-    ax_left.plot(times[::100], ch[::100], lw=0.5, c='0.6')
+    ax_left.plot(times[::200], ch[::200], lw=0.5, c='0.6')
     
-    plt_slice = slice(1405000,1480000,10)
+    plt_slice = slice(1405000,1550000,20)
     ax_right.plot(times[plt_slice], ch[plt_slice], lw=0.5, c='0.6')
     
     ax_left.vlines([times[plt_slice.start], times[plt_slice.stop]], 
@@ -104,8 +105,8 @@ fig.suptitle(file.name)
 # Load data
 # data_dir = '/media/marcos/DATA/marcos/FloClock_data/data'
 data_dir = '/media/marcos/DATA/marcos/FloClock_data/tiempos_post_diseccion'
-file_inx = 9
-outlier_mode_proportion = 1.8 #1.8 for normal runs
+file_inx = 3
+outlier_mode_proportion = 1.6 #1.8 for normal runs
 
 data_files = contenidos(data_dir, filter_ext='.abf')
 
@@ -357,7 +358,7 @@ print('Running', data.metadata.file.stem)
 # Load data
 # data_dir = '/media/marcos/DATA/marcos/FloClock_data/data'
 data_dir = '/media/marcos/DATA/marcos/FloClock_data/tiempos_post_diseccion'
-file_inx = 1
+file_inx = 91
 outlier_mode_proportion = 1.8 #1.8 for normal runs
 
 data_files = contenidos(data_dir, filter_ext='.abf')
@@ -374,6 +375,7 @@ interval = tpd_data.loc[rec_nr]['rango_de_minutos'] if rec_nr in tpd_data.index 
 
 # Process data a bit
 data = au.load_any_data(data_files[file_inx], gauss_filter=False)
+# data.process.highpass_filter(frequency_cutoff=0.1)
 data.process.lowpass_filter(frequency_cutoff=10, keep_og=True)
 data = data.process.downsample()
 data.process.lowpass_filter(frequency_cutoff=2, keep_og=True, channels='lpfilt')
@@ -392,9 +394,10 @@ for ax, ax_p, ch in zip((ax1, ax2), (ax3, ax4), (1, 2)):
     ax.plot(data.times, data[f'ch{ch}_lpfilt_lpfilt'])
     
     # plot baseline
-    mininx, minima, fmininx, fminima = data.process.baseline_in_one_channel(data[f'ch{ch}_lpfilt'], drop_quantile=0.3)
-    # ax.plot(data.times.values[mininx], minima, 'k.')
-    # ax.plot(data.times.values[fmininx], fminima, 'r.')
+    mininx, minima, fmininx, fminima = data.process.baseline_in_one_channel(
+        data[f'ch{ch}_lpfilt'], drop_quantile=0.3)
+    ax.plot(data.times.values[mininx], minima, 'k.')
+    ax.plot(data.times.values[fmininx], fminima, 'r.')
     
     ax.plot(btimes, baselines[ch-1], 'o')
     ax.plot(btimes, baselines[ch-1])
@@ -419,6 +422,91 @@ au.make_scalebar(ax2)
 
     
 print('Running', data.metadata.file.stem)
+
+
+#%% Amplitudes
+
+# Load data
+# data_dir = '/media/marcos/DATA/marcos/FloClock_data/data'
+data_dir = '/media/marcos/DATA/marcos/FloClock_data/tiempos_post_diseccion'
+file_inx = 18
+outlier_mode_proportion = 1.8 #1.8 for normal runs
+
+data_files = contenidos(data_dir, filter_ext='.abf')
+
+# data containing relevant intervals
+tpd_file = Path(data_dir) / 'info.xlsx'
+tpd_data = pd.concat(sheet for name, sheet in pd.read_excel(tpd_file, sheet_name=None).items() 
+                     if name in ('large', 'small'))
+tpd_data['registro'] = tpd_data.registro.astype(str)
+tpd_data = tpd_data.set_index('registro')
+
+rec_nr = data_files[file_inx].stem
+interval = tpd_data.loc[rec_nr]['rango_de_minutos'] if rec_nr in tpd_data.index else None
+
+# Process data a bit
+data = au.load_any_data(data_files[file_inx], gauss_filter=False)
+# data.process.highpass_filter(frequency_cutoff=0.1)
+data.process.lowpass_filter(frequency_cutoff=10, keep_og=True)
+data = data.process.downsample()
+data.process.lowpass_filter(frequency_cutoff=2, channels='lpfilt')
+
+data.process.find_peaks(channels='lpfilt', period_percent=0.6, prominence=7)
+btimes, *baselines = data.process.multi_baseline('lpfilt', drop_quantile=0.3, length=20)
+
+# Plot data and peaks
+fig, (ax1, ax3, ax2, ax4) = plt.subplots(4, 1, figsize=(12, 8), constrained_layout=True, sharex=True, height_ratios=[2,1,2,1])
+
+P = np.polynomial.Polynomial
+for ax, ax_a, ch in zip((ax1, ax2), (ax3, ax4), (1, 2)):
+    
+    # plot timeseries    
+    ax.plot(data.times, data[f'ch{ch}'], color='0.6')
+    ax.plot(data.times, data[f'ch{ch}_lpfilt'])
+    
+    # plot peaks
+    ax.plot(data.process.get_peak_pos(ch), data.process.get_peak_values(ch), 'xk')
+    
+    # plot baseline
+    mininx, minima, fmininx, fminima = data.process.baseline_in_one_channel(data[f'ch{ch}_lpfilt'], drop_quantile=0.3)
+    
+    ax.plot(btimes, baselines[ch-1], 'o')
+    ax.plot(btimes, baselines[ch-1])
+    
+    # plot aplitudes
+    baseline_interpolator = interpolate.interp1d(btimes, baselines[ch-1], 
+                                                  kind='linear', bounds_error=False)
+    amplitudes = data.process.get_peak_values(ch) - baseline_interpolator(data.process.get_peak_pos(ch))
+    
+    ppos_and_val = zip(data.process.get_peak_pos(ch), data.process.get_peak_values(ch))
+    segments = [[(ppos, baseline_interpolator(ppos)), (ppos, pval)] for ppos, pval in ppos_and_val]    
+    lines = collections.LineCollection(segments, colors='k', linestyles='dashed')
+    ax.add_collection(lines)
+    
+    # plot amp over time
+    ax_a.plot(data.process.get_peak_pos(ch), amplitudes)
+    
+    # set limits
+    ax.set_xlim(data.times.values[0], data.times.values[-1])
+    
+    if not data.metadata.twochannel:
+        break
+
+fig.suptitle(data.metadata.file.stem)
+ax4.set_xlabel('time (s)')
+
+ax1.set_ylabel('mV')
+ax2.set_ylabel('mV')
+ax3.set_ylabel('period (s)')
+ax4.set_ylabel('period (s)')
+
+ax1.set_title('Channel 1')
+ax2.set_title('Channel 2')
+au.make_scalebar(ax2)
+
+    
+print('Running', data.metadata.file.stem)
+
 
 #%% Extract time dependent periods
 
@@ -501,7 +589,7 @@ ax.set_ylabel('period (s)')
 # Load data
 # data_dir = '/media/marcos/DATA/marcos/FloClock_data/data'
 data_dir = '/media/marcos/DATA/marcos/FloClock_data/tiempos_post_diseccion'
-file_inx = 80
+file_inx = 12
 outlier_mode_proportion = 1.6 #1.8 for normal runs
 
 data_files = contenidos(data_dir, filter_ext='.abf')
@@ -557,7 +645,7 @@ for ax, ch in zip((ax1, ax2), (1, 2)):
     # add period calculated through threshold crossings
     rising_times, rising_periods = data.process.get_edge_periods(ch, 'rising')
     falling_times, falling_periods = data.process.get_edge_periods(ch, 'falling')
-    mrising_times, mrising_periods, mrising_errors = data.process.get_multi_edge_periods(1, 'rising', threshold_var=5)
+    mrising_times, mrising_periods, mrising_errors, _ = data.process.get_multi_edge_periods(1, 'rising', threshold_var=5)
     
     # plot edge crossing periods
     ax.plot(rising_times, rising_periods, 'x', c='C3')
@@ -744,6 +832,97 @@ for i, file in enumerate(data_files):
 
 # output_info_df = pd.DataFrame(output_info)
 # output_info_df.to_csv(output_dir / 'periods_info1.csv', index=False)
+
+
+#%% Get and save amplitudes (all runs)
+
+# Load data
+# data_dir = '/media/marcos/DATA/marcos/FloClock_data/data'
+data_dir = '/media/marcos/DATA/marcos/FloClock_data/tiempos_post_diseccion'
+output_dir = Path(data_dir) / 'output' / 'amplitude_fix'
+tpd_file = Path(data_dir) / 'info.xlsx'
+pair_guide_file = Path(data_dir) / 'par_guide.xlsx' 
+
+# load relevant info
+data_files = contenidos(data_dir, filter_ext='.abf')
+tpd_data = pd.concat(sheet for name, sheet in pd.read_excel(tpd_file, sheet_name=None).items())
+                      # if name not in ('large', 'small'))
+# tpd_data = pd.concat(pd.read_excel(tpd_file, sheet_name=None).values())
+pair_guide = pd.read_excel(pair_guide_file)
+
+# set rec names to string
+tpd_data['registro'] = tpd_data.registro.astype(str)
+tpd_data = tpd_data.set_index('registro')
+
+pair_guide['rec'] = pair_guide.rec.astype(str)
+pair_guide = pair_guide.set_index('rec')
+
+output_content = [f.split('_')[0] for f in contenidos(output_dir).stems()]
+max_files_per_run = 43
+j = 0
+for i, file in enumerate(data_files):
+    # make sure we don't repeat analysis nor explode the RAM
+    if file.stem in output_content:
+        continue
+    else:
+        j+=1
+    if j > 20:
+        break
+    
+    print('Running', f'{i+1}/{len(data_files)}:', file.stem, end='. ')
+    
+    # Get tpd
+    rec_nr = file.stem
+
+    if rec_nr not in tpd_data.index:# or pair_guide.loc[file.stem].par =='single':
+        print('No tpd info available. Skipping...')
+        continue
+    else:
+        print()
+    
+    # data containing relevant intervals
+    rec_nr = file.stem
+    interval = tpd_data.loc[rec_nr]['rango_de_minutos'] if rec_nr in tpd_data.index else None
+    
+    # Process data a bit
+    data = au.load_any_data(file, gauss_filter=False, interval=interval)
+    data.process.highpass_filter(frequency_cutoff=0.1)
+    data.process.lowpass_filter(frequency_cutoff=2)
+    data = data.process.downsample()
+    
+    try:
+        data.process.find_peaks()
+        btimes, *baselines = data.process.multi_baseline(drop_quantile=0.3, length=20)
+    except IndexError:
+        # raise
+        continue
+
+    # Save the relevant data (one or two channels)
+    for ch in (1, 2):    
+        baseline_interpolator = interpolate.interp1d(btimes, baselines[ch-1], 
+                                                     kind='linear', bounds_error=False)
+        amplitudes = data.process.get_peak_values(ch) - baseline_interpolator(data.process.get_peak_pos(ch))
+        
+        # remove nans
+        atimes = data.process.get_peak_pos(ch)[~np.isnan(amplitudes)]
+        amplitudes = amplitudes[~np.isnan(amplitudes)]
+                
+        cell_type = getattr(data.metadata, f'ch{ch}')
+        if cell_type == 'R':
+            continue
+        
+        new_name = data.metadata.file.stem + f'_ch{ch}'
+        np.savez(output_dir / new_name,
+                  atimes = atimes, 
+                  amplitudes = amplitudes
+                  )
+    
+        if not data.metadata.twochannel:    
+            break
+
+# output_info_df = pd.DataFrame(output_info)
+# output_info_df.to_csv(output_dir / 'periods_info1.csv', index=False)
+
 
 
 #%% Get and save time dependent periods (dual channel runs)
@@ -1030,13 +1209,14 @@ times_tpd_valid = []
 periods_valid = []
 tpds = []
 durations = []
+lens = []
 for file, c in zip(data_files, color_list):
     # load data
     data = np.load(file)
     t = data['times'] / 60
     p = data['periods']
     tpd = info.loc[file.stem].tpd
-    
+    lens.append(len(p))
     durations.append(t[-1])
     small = info.loc[file.stem]['type'] == 'S'
     if not small:
@@ -1070,10 +1250,11 @@ for file, c in zip(data_files, color_list):
     times_tpd_valid.extend(t[valid_indexes]+tpd)
     
     
-durations_df = pd.DataFrame({'duration':durations, 
+durations_df = pd.DataFrame({'duration':durations, 'len':lens,
                              'name':list(data_files.stems())}).sort_values('name').set_index('name')
 
 info['duration'] = durations_df.duration
+info['len'] = durations_df.len
 
 
 # Add local variability
@@ -1232,7 +1413,7 @@ for axi in axbar:
 
 # plot durations
 info.sort_values('tpd', inplace=True)
-valid = info.type=='S'
+valid = info.type=='L'
 for i, (tpd, dur) in enzip(info[valid].tpd, info[valid].duration):
 # for i, (tpd, dur) in enzip(info[:].tpd, info[:].duration):
     # axl.plot([tpd, tpd+dur], [dur, dur], '0.3')
@@ -1283,23 +1464,17 @@ info = pd.read_csv(info_dir).sort_values('name').set_index('name')
 # add tpd in seconds
 info['tpd_sec'] = info.tpd * 60
 
-# load and plot data
-
-norm = colors.Normalize(info.time_hours.min(), info.time_hours.max())
-color_list = cm.viridis([norm(info.loc[file.stem].time_hours) for file in data_files])
-
-# color_list = cm.jet(np.linspace(0, 1, len(data_files)+1))[1:]
 times = {'L' : [], 'S': []}
 periods = {'L' : [], 'S': []}
-for file, c in zip(data_files, color_list):
+for file in data_files:
     # load data
     data = np.load(file)
     t = data['times'] / 60
     p = data['periods']
     tpd = info.loc[file.stem].tpd
     celltype = info.loc[file.stem]['type']
-    
-    # plot trend lines
+
+    # get valid points    
     valid_indexes = au.find_valid_periods(t, p, outlier_mode_proportion, passes=2)
         
     # append data to lists
@@ -1316,7 +1491,6 @@ plt.xlabel('TPD')
 plt.ylabel('CD')
 plt.ylim(0.5, 7.5)
 
-
 fig, ax = plt.subplots(figsize=(5, 5))
 
 for time_bins in time_bins:
@@ -1324,6 +1498,8 @@ for time_bins in time_bins:
     time_min = min(min(t) for t in times.values())
     time_max = max(max(t) for t in times.values())
     time_step = (time_max - time_min) / time_bins
+
+    mean_TPDs = np.arange(time_min + time_step/2, time_max, time_step)
 
     mean_CDs = {}
     std_CDs = {}
@@ -1350,6 +1526,8 @@ for time_bins in time_bins:
     
     ax.errorbar(mean_CDs['L'], mean_CDs['S'], xerr=std_CDs['L'], yerr=std_CDs['S'], 
                 fmt='k.', label=time_bins, ms=(50-time_bins)/3)
+    s = ax.scatter(mean_CDs['L'], mean_CDs['S'], s=15, c=mean_TPDs, zorder=2.1)
+    plt.colorbar(s)
     #ax.plot(mean_CDs['L'], mean_CDs['S'], '.', label=time_bins, ms=(50-time_bins)/3)
     
     # correlation values
@@ -1372,8 +1550,7 @@ ax.set_aspect('equal', 'box')
 
 #%% Plot recording duration
 
-""" This cell depends on the cell above being run at least once, becauses that
-one defines some data structures we use here."""
+""" Line plots of duration for each cell type"""
 
 VALID = True
 
@@ -1418,6 +1595,16 @@ for ax, celltype in zip(axarr, ('L', 'S')):
 # Format and stuff
 ax.set_xlabel('time relative to tpd [min]')
 
+# minima and maxima
+minima = info.groupby('type').duration.min()
+maxima = info.groupby('type').duration.max()
+cprint('&lc lLNv &s duration:')
+cprint(f'&ly \t min&s : {minima.L:.1f}')
+cprint(f'&ly \t max&s : {maxima.L:.1f}')
+
+cprint('&lc sLNv &s duration:')
+cprint(f'&ly \t min&s : {minima.S:.1f}')
+cprint(f'&ly \t max&s : {maxima.S:.1f}')
 #%% Save all individual runs
 
 """ Save the period distribution of all individual runs to see which one (if 
@@ -1591,15 +1778,21 @@ for file, c in zip(data_files, color_list):
     time_hours = info.loc[file.stem].time_hours
     small = info.loc[file.stem]['type'] == 'S'
     
-    ip = np.mean(p[:40])
+    valid_indexes = au.find_valid_periods(t, p, passes=2)
+    
+    ip = np.mean(p[:40][valid_indexes[:40]])
+    ipe = np.std(p[:40][valid_indexes[:40]])
+    
     if ip > 5:
+        print('Skipping because it had too initial period:', file.name)
         continue
 
     initial_periods.append(ip)
-    initial_periods_error.append(np.std(p[:40]))
+    initial_periods_error.append(ipe)
     tpds.append(tpd)
     daytime.append(time_hours)
     issmall.append(small)
+    
 
 tpds = np.asarray(tpds)
 initial_periods = np.asarray(initial_periods)
@@ -1616,24 +1809,39 @@ ax1.set_ylabel('initial period [sec]')
 cbar = plt.colorbar(sc, label='time of day [hours]')
 
 # trend line
-trend = np.polynomial.Polynomial.fit(tpds, initial_periods, deg=1, w=1/initial_periods_error**2)
+linear = lambda x, a, b: a*x+b
+
+popt, pcov = optimize.curve_fit(linear, tpds, initial_periods, sigma=initial_periods_error)
+trend = lambda x: popt[0]*x + popt[1]
+slope = popt[0]
+slope_err = np.sqrt(pcov[0, 0])
+
+# trend = np.polynomial.Polynomial.fit(tpds, initial_periods, deg=1, w=1/initial_periods_error**2)
 pearson, _ = stats.pearsonr(tpds, initial_periods)
-slope = trend.convert().coef[1]
-_, cov = np.polyfit(tpds, initial_periods, deg=1, cov='unscaled')
-slope_err = np.sqrt(cov[0, 0])
+# slope = trend.convert().coef[1]
+# _, cov = np.polyfit(tpds, initial_periods, deg=1, cov='unscaled')
+# slope_err = np.sqrt(cov[0, 0])
 fit_error = au.linear_fit_error(tpds, initial_periods_error.mean())
 
 # small trend
-small_trend = np.polynomial.Polynomial.fit(tpds[issmall], initial_periods[issmall], deg=1, w=1/initial_periods_error[issmall]**2)
-small_slope = small_trend.convert().coef[1]
-_, cov = np.polyfit(tpds[issmall], initial_periods[issmall], deg=1, w=1/initial_periods_error[issmall]**2, cov='unscaled')
-small_slope_err = np.sqrt(cov[0, 0])
+spopt, spcov = optimize.curve_fit(linear, tpds[issmall], initial_periods[issmall])#, sigma=initial_periods_error[issmall])
+small_trend = lambda x: spopt[0]*x + spopt[1]
+small_slope = spopt[0]
+small_slope_err = np.sqrt(spcov[0, 0])
+# small_trend = np.polynomial.Polynomial.fit(tpds[issmall], initial_periods[issmall], deg=1, w=1/initial_periods_error[issmall]**2)
+# small_slope = small_trend.convert().coef[1]
+# _, cov = np.polyfit(tpds[issmall], initial_periods[issmall], deg=1, w=1/initial_periods_error[issmall]**2, cov='unscaled')
+# small_slope_err = np.sqrt(cov[0, 0])
 
 # large trend
-large_trend = np.polynomial.Polynomial.fit(tpds[~issmall], initial_periods[~issmall], deg=1, w=1/initial_periods_error[~issmall]**2)
-large_slope = large_trend.convert().coef[1]
-_, cov = np.polyfit(tpds[~issmall], initial_periods[~issmall], w=1/initial_periods_error[~issmall]**2, deg=1, cov='unscaled')
-large_slope_err = np.sqrt(cov[0, 0])
+lpopt, lpcov = optimize.curve_fit(linear, tpds[~issmall], initial_periods[~issmall])#, sigma=initial_periods_error[~issmall])
+large_trend = lambda x: lpopt[0]*x + lpopt[1]
+large_slope = lpopt[0]
+large_slope_err = np.sqrt(lpcov[0, 0])
+# large_trend = np.polynomial.Polynomial.fit(tpds[~issmall], initial_periods[~issmall], deg=1, w=1/initial_periods_error[~issmall]**2)
+# large_slope = large_trend.convert().coef[1]
+# _, cov = np.polyfit(tpds[~issmall], initial_periods[~issmall], w=1/initial_periods_error[~issmall]**2, deg=1, cov='unscaled')
+# large_slope_err = np.sqrt(cov[0, 0])
 
 
 ax1.plot(tpds, trend(tpds), 'k', label=f'slope = {slope:.3f}±{slope_err:.3f}')
@@ -1642,9 +1850,9 @@ ax1.legend(loc='lower right')
 # ax2
 # ax2.scatter(tpds, initial_periods, c=issmall, cmap='cool')
 ax2.errorbar(tpds[issmall], initial_periods[issmall], initial_periods_error[issmall], 
-             fmt='o', label='small')
+             fmt='o', label=f'small (slope={small_slope:.3f}±{small_slope_err:.3f})', color=scolor)
 ax2.errorbar(tpds[~issmall], initial_periods[~issmall], initial_periods_error[~issmall], 
-             fmt='o', label='large')
+             fmt='o', label=f'large (slope={large_slope:.3f}±{large_slope_err:.3f})', color=lcolor)
 ax2.set_xlabel('time since disection [sec]')
 ax2.set_ylabel('initial period [sec]')
 
@@ -1655,8 +1863,8 @@ ax2.plot(line_time, trend(line_time), 'k', label=f'$r_{{pearson}}$ = {pearson:.2
 ax2.plot(line_time, trend(line_time) + fit_error(line_time), '--k', lw=0.5)
 ax2.plot(line_time, trend(line_time) - fit_error(line_time), '--k', lw=0.5)
 
-ax2.plot(line_time, small_trend(line_time), 'C0')
-ax2.plot(line_time, large_trend(line_time), 'C1')
+ax2.plot(line_time, small_trend(line_time), scolor)
+ax2.plot(line_time, large_trend(line_time), lcolor)
 
 ax2.legend(loc='lower right')
 ax2.set_ylim(ax1.get_ylim())
@@ -1680,8 +1888,8 @@ detrended_periods = np.asarray(initial_periods)# - trend(np.asarray(tpds))
 daytime = np.asarray(daytime)
 
 plt.figure()
-plt.errorbar(daytime[issmall], detrended_periods[issmall], initial_periods_error[issmall], fmt='.', label='small')
-plt.errorbar(daytime[~issmall], detrended_periods[~issmall], initial_periods_error[~issmall], fmt='.', label='large')
+plt.errorbar(daytime[issmall], detrended_periods[issmall], initial_periods_error[issmall], fmt='.', label='small', color=scolor)
+plt.errorbar(daytime[~issmall], detrended_periods[~issmall], initial_periods_error[~issmall], fmt='.', label='large', color=lcolor)
 plt.xlabel('time of day [hours]')
 plt.ylabel('period (normalized) [sec]')
 plt.legend()
@@ -2160,8 +2368,8 @@ ax.axhline(period_mode*outlier_mode_proportion, ls='--', color='k')
 discrimination. To that end, we calculate the period variability for multiple 
 values of the threshold with one and tow pass outlier detection."""
 
-# data_dir = '/media/marcos/DATA/marcos/FloClock_data/tiempos_post_diseccion'
-data_dir = '/home/user/Documents/Doctorado/Fly clock/FlyClock_data/tiempos_post_diseccion'
+data_dir = '/media/marcos/DATA/marcos/FloClock_data/tiempos_post_diseccion'
+# data_dir = '/home/user/Documents/Doctorado/Fly clock/FlyClock_data/tiempos_post_diseccion'
 data_dir = Path(data_dir) / 'output' / 'frequency_time_dependency'
 info_dir = data_dir / 'periods_info.csv'
 
@@ -2725,7 +2933,7 @@ data_dir = '/media/marcos/DATA/marcos/FloClock_data/tiempos_post_diseccion'
 data_dir = Path(data_dir) / 'output' / 'frequency_time_dependency'
 
 outlier_mode_proportion = 1.8 #1.8 for normal runs
-KIND = 'S'  # 'L', 'S', or None
+KIND = 'L'  # 'L', 'S', or None
 
 COLOR_INVALID = '#db4a4a'
 
@@ -2799,7 +3007,7 @@ ax2.plot(t_norm[~valid], p[~valid], '.', c=COLOR_INVALID, rasterized=True, ms=3)
 # Average data in small windows
 steps = 20
 time_bins = np.linspace(t.min(), t.max(), steps)
-
+min_valid_fraction = 1
 for t0, t1 in zip(time_bins, time_bins[1:]):
 
     # For normal scale time
@@ -2825,6 +3033,9 @@ for t0, t1 in zip(time_bins, time_bins[1:]):
     ax4.plot(tt, valid_count/total_count, 'o', c=color)
     ax6.plot(tt, total_count, 'x', c='C3')
     
+    # save minimum
+    min_valid_fraction = min(min_valid_fraction, valid_count/total_count)
+    
 ylims3 = ax3.get_ylim()
 ax3.hist(durations, bins=time_bins, bottom=ylims3[0 ], density=True, color='0.7')
 
@@ -2847,11 +3058,18 @@ fig.suptitle(suptitle, fontsize=14)
 ax1.set_ylim(0, 20)
 ax3.set_ylim(0, 1.05)
 
+### Some stats
+cprint(f'&lc KIND: &ly {KIND if KIND is not None else "both"}')
+print(f'Total points: {p.size}')
+print(f'Total valid points: {valid.sum()}')
+print(f'Total valid fraction: {valid.sum() / p.size:.1%}')
+print(f'Min valid fraction: {min_valid_fraction:.1%}')
+
 
 #%% Quantify baselines
 
-# data_dir = '/media/marcos/DATA/marcos/FloClock_data/tiempos_post_diseccion'
-data_dir = '/home/user/Documents/Doctorado/Fly clock/FlyClock_data/tiempos_post_diseccion'
+data_dir = '/media/marcos/DATA/marcos/FloClock_data/tiempos_post_diseccion'
+# data_dir = '/home/user/Documents/Doctorado/Fly clock/FlyClock_data/tiempos_post_diseccion'
 data_dir = Path(data_dir) / 'output' / 'baseline_time_dependency'
 
 info_dir = data_dir / 'baselines_info.csv'
@@ -2923,3 +3141,288 @@ ax2.grid()
 axh.set_xlabel('# counts')
 axh.set_title('Distribution of baselines\n(data over time)')
 axh.grid()
+
+
+#%% Quantify amplitudes
+
+data_dir = '/media/marcos/DATA/marcos/FloClock_data/tiempos_post_diseccion'
+# data_dir = '/home/user/Documents/Doctorado/Fly clock/FlyClock_data/tiempos_post_diseccion'
+# data_dir = Path(data_dir) / 'output' / 'amplitude_time_dependency'
+data_dir = Path(data_dir) / 'output' / 'amplitude_fix'
+
+info_dir = data_dir / 'amplitudes_info.csv'
+data_files = contenidos(data_dir, filter_ext='.npz')
+
+# load info
+info = pd.read_csv(info_dir).sort_values('name').set_index('name')
+
+# add tpd in seconds
+info['tpd_sec'] = info.tpd * 60
+
+
+fig, (ax1, ax2, axh) = plt.subplots(1, 3, constrained_layout=True, 
+                                    figsize=[12, 3.2],
+                                    width_ratios=[1, 1.6, 0.4], sharey=True)
+mean_amp = {}
+stimes, samps = [], []
+ltimes, lamps = [], []
+slopes, slope_errors = [], []
+for file in data_files:
+    loaded = np.load(file)
+    
+    celltype = info.loc[file.stem].type
+    tpd = info.loc[file.stem].tpd
+    
+    mean_amp[file.stem] = loaded['amplitudes'].mean()
+    times = loaded['atimes']/60 + tpd
+    amps = loaded['amplitudes']
+    
+    if amps.size != times.size:
+        print(file.stem, 'is bad')
+        continue
+    
+    if celltype =='S':
+        stimes.extend(times)
+        samps.extend(amps)
+    else:
+        ltimes.extend(times)
+        lamps.extend(amps)
+    
+    thecolor = scolor if celltype=='S' else lcolor
+    thezorder = 2 if celltype=='S' else 1.9
+    ax2.plot(times, smooth(amps, 30), c=thecolor, zorder=thezorder)
+    # ax2.plot(times, amps, c=thecolor, zorder=thezorder)
+    
+    trend = np.polynomial.Polynomial.fit(times, amps, deg=1)
+    # ax2.plot(times, trend(times), c=thecolor, zorder=thezorder)
+    slopes.append(trend.convert().coef[1])
+    
+    # calculate the uncertainty in the slope (yes, I'm doing extra work)
+    popt, pcov = optimize.curve_fit(lambda x, a, b: a*x+b, times, amps)
+    slope_errors.append(np.sqrt(np.diag(pcov))[0])
+    
+    # if mean_amp[file.stem] < 4:
+    #     print(file.stem)
+    
+    if any(amps<.1):
+        where = amps<.1
+        ax2.plot(times[where], amps[where], c='r', zorder=thezorder)
+        print(file.stem)
+        break
+
+new_info_dict = {rec:[amp, slope, err] for (rec, amp), slope, err in zip(mean_amp.items(), slopes, slope_errors)}
+new_info = pd.DataFrame.from_dict(new_info_dict, orient='index', columns=['amplitude', 'slope', 'slope_err'])
+info = info.join(new_info)
+
+colors_list = [scolor if row.type=='S' else lcolor for _, row in info.iterrows()]
+ax1.scatter(info.tpd + info.duration/2, info.amplitude, c=colors_list)
+
+# ax2.plot(ltimes, lbaselines,  c=lcolor, label='L', rasterized=True)
+# ax2.plot(stimes, sbaselines,  c=scolor, label='S', rasterized=True)
+
+axh.hist([*samps, *lamps], bins='auto', fc='0.6', orientation='horizontal')    
+axh.hist(lamps, bins='auto', fc=lcolor, orientation='horizontal', alpha=0.4)
+axh.hist(samps, bins='auto', fc=scolor, orientation='horizontal', alpha=0.4)
+
+# format plots
+ax1.set_xlabel('tpd [min]')
+ax1.set_ylabel('amplitude [mV]\npeak-to-baseline')
+ax1.set_title('Avearge amplitude')
+ax1.grid()
+
+ax2.set_xlabel('tpd [min]')
+ax2.set_title('Local amplitude over time, smoothed')
+ax2.grid()
+
+axh.set_xlabel('# counts')
+axh.set_title('Distribution of amplitudes\n(data over time)')
+axh.grid()
+
+# Extra figure with slopes analysis
+# info.slope /= info.amplitude
+# info.slope_err /= info.amplitude
+
+fig2, (axs1, axs2) = plt.subplots(1, 2, sharey=True, width_ratios=[3, 1], 
+                                  constrained_layout=True, figsize=[8, 3.25])
+
+axs1.scatter(info.tpd + info.duration/2, info.slope, c=colors_list, zorder=2.1)
+axs1.errorbar(info.tpd + info.duration/2, info.slope, info.slope_err, fmt='none', ecolor='0.7')
+
+# linear fits
+linear = lambda x, a, b: a*x+b
+
+issmall = info.type=='S'
+isnan = info.slope.isna()
+
+large = np.logical_and(~issmall, ~isnan)
+small = np.logical_and(issmall, ~isnan)
+
+lpopt, _ = optimize.curve_fit(linear, (info.tpd + info.duration/2)[large], info.slope[large], sigma=info.slope_err[large])
+spopt, _ = optimize.curve_fit(linear, (info.tpd + info.duration/2)[small], info.slope[small], sigma=info.slope_err[small])
+
+axs1.plot((info.tpd + info.duration/2)[~small], linear((info.tpd + info.duration/2)[~small], *lpopt), c=lcolor)
+axs1.plot((info.tpd + info.duration/2)[small], linear((info.tpd + info.duration/2)[small], *spopt), c=scolor)
+    
+axs2.hist(info.slope, bins='auto', fc='0.6', orientation='horizontal')
+axs2.hist(info.slope[info.type=='L'], bins='auto', fc=lcolor, orientation='horizontal', alpha=0.4)
+axs2.hist(info.slope[info.type=='S'], bins='auto', fc=scolor, orientation='horizontal', alpha=0.4)
+
+# format extra figure
+axs1.grid()
+axs2.grid()
+
+axs1.set_xlabel('tpd [min]')
+axs1.set_ylabel('Amplitude slope [mV/min]')
+axs2.set_xlabel('# counts')
+
+axs1.set_title('Amplitude average slope')
+axs2.set_title('Amplitude slope\ndistribution')
+
+
+#%% Visualzie amplitudes
+""" Plot a few curves of amplitude over time, maybe we can select a few 
+representative ones"""
+
+data_dir = '/media/marcos/DATA/marcos/FloClock_data/tiempos_post_diseccion'
+# data_dir = '/home/user/Documents/Doctorado/Fly clock/FlyClock_data/tiempos_post_diseccion'
+data_dir = Path(data_dir) / 'output' / 'amplitude_fix'
+
+info_dir = data_dir / 'amplitudes_info.csv'
+data_files = contenidos(data_dir, filter_ext='.npz')
+
+# load info
+info = pd.read_csv(info_dir).sort_values('name').set_index('name')
+
+# add tpd in seconds
+info['tpd_sec'] = info.tpd * 60
+
+column_count = 3 #6
+# row_count = np.ceil(len(data_files) / column_count).astype(int)
+row_count = 4# 5
+
+fig_width = 16
+fig_height = 1.7 * row_count
+
+fig, axarr = plt.subplots( row_count, column_count,
+                           constrained_layout=True, 
+                           figsize=[fig_width, fig_height], 
+                           # sharex=True,
+                           sharey=True
+                            )
+
+selected = '11_ch1', '32_ch2', '19521003_ch1', '22607004_ch2', '22527000_ch1', '6_ch1', '3_ch2', '17_ch1', '17727002_ch1', '17809000_ch1', '22623000_ch1', '18118011_ch1'
+
+for ax, file in zip(axarr.flat, selected):
+    file = data_dir / (file + '.npz')
+# for ax, file in zip(axarr.flat, data_files):    
+    loaded = np.load(file)
+    
+    celltype = info.loc[file.stem].type
+    tpd = info.loc[file.stem].tpd
+    
+    times = loaded['atimes']/60 + tpd
+    amps = loaded['amplitudes']
+    
+    if amps.size != times.size:
+        print(file.stem, 'is bad')
+        continue
+        
+    thecolor = scolor if celltype=='S' else lcolor
+    thezorder = 2 if celltype=='S' else 1.9
+    # ax2.plot(times, smooth(amps, 10), c=thecolor, zorder=thezorder)
+    ax.plot(times, amps, c=thecolor, zorder=thezorder)
+    
+    ax.legend(handles=[], loc='upper right', title=file.stem)
+
+# row labels
+letters = 'ABCDEFGHIJKL'
+for letter, ax in zip(letters, axarr[0]):
+    ax.set_title(letter, fontsize=15)
+    
+# column labels
+for i, ax in enumerate(axarr[:, 0]):
+    ax.set_ylabel(i, rotation=0, fontsize=15)
+
+savedir = '/media/marcos/DATA/marcos/FloClock pics/Amplitude/'
+fig.savefig(savedir + 'all runs.pdf')
+
+# format plots
+# ax1.set_ylabel('amplitude [mV]\npeak-to-baseline')
+# ax2.set_xlabel('tpd [min]')
+# ax2.set_title('Local amplitude over time, smoothed')
+# ax2.grid()
+
+
+#%% Amplitudes for paper
+
+data_dir = '/media/marcos/DATA/marcos/FloClock_data/tiempos_post_diseccion'
+# data_dir = '/home/user/Documents/Doctorado/Fly clock/FlyClock_data/tiempos_post_diseccion'
+# data_dir = Path(data_dir) / 'output' / 'amplitude_time_dependency'
+data_dir = Path(data_dir) / 'output' / 'amplitude_fix'
+
+info_dir = data_dir / 'amplitudes_info.csv'
+data_files = contenidos(data_dir, filter_ext='.npz')
+
+# load info
+info = pd.read_csv(info_dir).sort_values('name').set_index('name')
+
+# add tpd in seconds
+info['tpd_sec'] = info.tpd * 60
+
+
+
+mean_amp = {}
+stimes, samps = [], []
+ltimes, lamps = [], []
+slopes, slope_errors = [], []
+for file in data_files:
+    loaded = np.load(file)
+    
+    celltype = info.loc[file.stem].type
+    tpd = info.loc[file.stem].tpd
+    
+    mean_amp[file.stem] = loaded['amplitudes'].mean()
+    times = loaded['atimes']/60 + tpd
+    amps = loaded['amplitudes']
+    
+    if amps.size != times.size:
+        print(file.stem, 'is bad')
+        continue
+    
+    if celltype =='S':
+        stimes.extend(times)
+        samps.extend(amps)
+    else:
+        ltimes.extend(times)
+        lamps.extend(amps)
+        
+    if any(amps<.1):
+        where = amps<.1
+        ax2.plot(times[where], amps[where], c='r', zorder=thezorder)
+        print(file.stem)
+        break
+
+new_info_dict = mean_amp
+new_info = pd.DataFrame.from_dict(new_info_dict, orient='index', columns=['amplitude',])
+info = info.join(new_info)
+
+# Plot
+fig, ax = plt.subplots(1, 1, constrained_layout=True, figsize=[2.5, 3.2])
+
+info.boxplot('amplitude', by='type', ax=ax, grid=False, showfliers=False)
+for i, (cellcolor, celltype) in enzip((lcolor, scolor), 'LS'):
+    kde_scatter(i+1, info.amplitude[info.type==celltype], 
+                ax=ax, mec='none', mfc=cellcolor, ms=8, 
+                alpha=1, rasterized=False, zorder=1)
+    
+ax.set_title('Mean amplitude')
+ax.set_ylabel('Amplitude [mV]')
+ax.set_xlabel('')
+
+for celltype, g in info.groupby('type'):
+    cellname = f'{celltype.lower()}LNv'
+    print(f'{cellname}:')
+    print(f'\tmedian amp: {g.amplitude.median():.1f} mV')
+    
+    q25, q75 = np.percentile(g.amplitude[~g.amplitude.isna()], [25, 75])
+    print(f'\tquartiles: {q25:.1f} - {q75:.1f}')

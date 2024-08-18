@@ -75,6 +75,32 @@ class RunInfo:
     def twochannel(self):
         return self._twochannel
 
+    def __repr__(self):
+        properties_titles = {
+            'ch1': 'ch1 type',
+            'ch2': 'ch2 type',
+            'duration_min': 'duration (min)',
+            'raw_sampling_rate': 'raw sampling rate (Hz)',
+            'sampling_rate': 'sampling rate (Hz)',
+            'mec_start_sec': 'mec start (sec)',
+            'rec_datetime' : 'date', 
+            'comment': 'comment',
+            'file' : 'file'
+            }
+        
+        properties_values = {k:getattr(self, k) for k in properties_titles if hasattr(self, k) }
+        
+        # some spetial cases
+        if not self.twochannel:
+            del properties_values['ch2']
+        if self.sampling_rate == self.raw_sampling_rate:
+            del properties_values['raw_sampling_rate']
+        if self.sampling_rate == int(self.sampling_rate):
+            properties_values['sampling_rate'] = int(self.sampling_rate)
+        
+        # build the string
+        string = '\n'.join(f'{properties_titles[k]}: {v}' for k, v in properties_values.items())
+        return string
 
 @pd.api.extensions.register_dataframe_accessor("process")
 class Processors:
@@ -1303,7 +1329,7 @@ class Processors:
             values of the local minima under the given quantile.
         """
         
-        min_inx, _ = signal.find_peaks(ch)
+        min_inx, _ = signal.find_peaks(-ch)
         minima = ch[min_inx]
                 
         # find the requested quantile of the minima
@@ -1773,6 +1799,8 @@ def load_single_channel(file, interval=None, gauss_filter=True, override_raw=Tru
     data.metadata.interval = interval
     data.metadata._twochannel = False
     data.metadata.rec_datetime = abf.abfDateTime
+    data.metadata.rec_datetime = abf.sampleRate
+    data.metadata.sampling_rate = data.metadata.raw_sampling_rate
     
     # filter data if needed
     if gauss_filter:

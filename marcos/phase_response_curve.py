@@ -24,12 +24,12 @@ import pyabf
 
 #%% Check out one file
 
-# BASE_DIR = '/media/marcos/DATA/marcos/FloClock_data/phase_response_curve'
-BASE_DIR = '/home/user/Documents/Doctorado/Fly clock/FlyClock_data/phase_response_curve'
+BASE_DIR = '/media/marcos/DATA/marcos/FloClock_data/phase_response_curve'
+# BASE_DIR = '/home/user/Documents/Doctorado/Fly clock/FlyClock_data/phase_response_curve'
 
 files = contenidos(BASE_DIR, filter_ext='.abf')
 
-file = files[-2]
+file = files[1]
 print('Running', file.stem)
 
 # Load data
@@ -886,11 +886,11 @@ ax.set_xlabel('phase')
 sections, so it likely has a bunch of extra unneeded code."""
 
 
-# BASE_DIR = Path('/media/marcos/DATA/marcos/FloClock_data/phase_response_curve')
-BASE_DIR = '/home/user/Documents/Doctorado/Fly clock/FlyClock_data/phase_response_curve'
+BASE_DIR = Path('/media/marcos/DATA/marcos/FloClock_data/phase_response_curve')
+# BASE_DIR = '/home/user/Documents/Doctorado/Fly clock/FlyClock_data/phase_response_curve'
 files = contenidos(BASE_DIR, filter_ext='.abf')
 
-file = files[36] # using 40, 39, 38, 36, 35, 34, 33, 32, 30, 29, 26
+file = files[39] # using 40, 39, 38, 36, 35, 34, 33, 32, 30, 29, 26
 threshold = 5
 METHOD = 'rising' # one of 'rising', 'falling' or 'peaks'
 SMOOTH = True # decides if we should do a harsh lowpass filter on the signal
@@ -1188,19 +1188,331 @@ for j, i in enumerate(keep_perturbation):
     ax.set_title(f'{relax:3f}')
 
 
-output_dir = file.parent / 'output' / 'relaxation_times'
+# output_dir = file.parent / 'output' / 'relaxation_times'
+# savefile = output_dir / file.stem
+# np.savez(savefile, 
+#          relaxation = relaxation,
+#          relaxation_error = relaxation_error,
+#          cycle_duration = cycle_duration
+#          )
+
+
+#%% Estimate the perturbation amplitude only in perturbations away from pulses
+
+""" This is hacked together from the "Get PRC" and "Estimate relaxatoin times"
+sections, so it likely has a bunch of extra unneeded code."""
+
+
+BASE_DIR = Path('/media/marcos/DATA/marcos/FloClock_data/phase_response_curve')
+# BASE_DIR = '/home/user/Documents/Doctorado/Fly clock/FlyClock_data/phase_response_curve'
+files = contenidos(BASE_DIR, filter_ext='.abf')
+
+file = files[39] # using 40, 39, 38, 36, 35, 34, 33, 32, 30, 29, 26
+threshold = 5
+METHOD = 'rising' # one of 'rising', 'falling' or 'peaks'
+SMOOTH = True # decides if we should do a harsh lowpass filter on the signal
+
+
+def lowpass_filter(times, data, filter_order, frequency_cutoff):
+    
+    # some filter methods leave behind nans in the data, that raises a LinAlgError
+    nan_locs = np.isnan(data)
+            
+    sampling_rate = 1/(times[1]-times[0])
+    sos = signal.butter(filter_order, frequency_cutoff, btype='lowpass', output='sos', fs=sampling_rate)
+    filtered = signal.sosfiltfilt(sos, data[~nan_locs])
+    
+    return filtered
+    
+
+def highpass_filter(times, data, filter_order, frequency_cutoff):
+    
+    # some filter methods leave behind nans in the data, that raises a LinAlgError
+    nan_locs = np.isnan(data)
+            
+    sampling_rate = 1/(times[1]-times[0])
+    sos = signal.butter(filter_order, frequency_cutoff, btype='highpass', output='sos', fs=sampling_rate)
+    filtered = signal.sosfiltfilt(sos, data[~nan_locs])
+    
+    return filtered
+
+
+def my_find_peaks(times, data, period_percent=0.4, prominence=3):
+    
+    ## first pass, with threshold 0mv
+    p_inx, _ = find_peaks(data, height=0)
+    
+    ## second pass, with threshold given by otsu
+    # threshold = Processors.get_threshold(peaks)
+    # p_inx, _ = signal.find_peaks(ch, height=threshold)
+    # peaks = ch.values[p_inx]
+    t_peaks = times[p_inx]
+
+    ## third pass, with minimum distance between peaks
+    counts, bins = np.histogram(np.diff(t_peaks))
+    bin_centers = bins[:-1] + np.diff(bins) / 2
+    period_mode = bin_centers[ np.argmax(counts) ]
+    distance_points = int(period_mode * period_percent / (times[1] - times[0]))
+    # p_inx, _ = signal.find_peaks(ch, height=threshold, distance=distance_points)
+    p_inx, _ = find_peaks(data, distance=distance_points, prominence=prominence)
+    
+    return p_inx
+
+
+def exp(t, A, t0, l, c):
+    return A * np.exp(-(t-t0)/l) + c
+
+# Load data
+abf = pyabf.ABF(file)
+print('Running', file.stem)
+
+# to prime it for the first sweep
+times = [0]
+all_time = []
+all_data = []
+all_pert = []
+
+for sweep in abf.sweepList:
+    print('Processing sweep', sweep)
+
+    # first gaussian filter
+    abf.setSweep(sweep)
+    times = abf.sweepX + times[-1]
+    data = abf.sweepY
+    
+    all_time.append(times)
+    all_data.append(data)
+    all_pert.append(abf.sweepC)
+
+time = np.concatenate(all_time)
+data = np.concatenate(all_data)
+perturbation = np.concatenate(all_pert)
+
+# filter data a bit
+data_lp = lowpass_filter(time, data, filter_order=2, frequency_cutoff=10)
+data_lp = data_lp[::10]
+time = time[::10]
+data = data[::10]
+perturbation = perturbation[::10]
+data_hp = highpass_filter(time, data_lp, filter_order=2, frequency_cutoff=0.1)
+if SMOOTH:
+    data_hp = lowpass_filter(time, data_hp, filter_order=2, frequency_cutoff=2)
+
+# plot
+fig_main = plt.figure(figsize=[17.69,  7.29], constrained_layout=True)
+fig, fig2 = fig_main.subfigures(1,2, width_ratios=[3,1])
+ax, ax2, axp = fig.subplots(3, sharex=True)
+ax_prc = fig2.subplots()
+
+ax.plot(time, data, label='raw')
+ax.plot(time, perturbation + data.mean(), label='perturb.')
+ax.plot(time, data_lp, label='lowpass $f_c$=10')
+ax.plot(time, lowpass_filter(time, data_lp, filter_order=2, frequency_cutoff=2), label='lowpass $f_c$=2')
+
+ax2.plot(time, data_hp, label='detrended')
+ax2.plot(time, perturbation + data_hp.mean(), label='perturb.')
+
+raw_data = data
+data = data_hp
+# find peaks and edge crossings
+
+peaks = my_find_peaks(time, data)
+ax2.plot(time[peaks], data[peaks], 'o', label='peaks')
+
+mean_period_in_points = round(np.diff(peaks).mean())
+
+# find crossing points
+rising_edge = []
+falling_edge = []
+filtered_peaks = []
+prev_peak = -np.inf
+for peak in peaks:
+    
+    # skip maxima that are too low
+    if data[peak] < threshold:
+        continue
+    
+    # skip maxima that are too close together
+    if peak - prev_peak < mean_period_in_points / 2:
+        continue
+    
+    # find rising edge point (before peak)
+    interval = data[:peak]
+    raising = np.nonzero(interval < threshold)[0][-1]
+    
+    # find falling edge point (after peak)    
+    starting_point = min(peak + int(mean_period_in_points / 2), len(data))
+    interval = data[:starting_point]
+    falling = np.nonzero(interval > threshold)[0][-1]
+    
+    rising_edge.append(raising)
+    falling_edge.append(falling)
+    filtered_peaks.append(peak)
+    prev_peak = peak
+
+rising_edge = np.asarray(rising_edge)
+falling_edge = np.asarray(falling_edge)
+peaks = np.asarray(filtered_peaks)
+
+### Choose which event to use as reference
+if METHOD == 'rising':
+    event_index_array = rising_edge # one of rising_edge, falling_edge, peaks
+elif METHOD == 'falling':
+    event_index_array = falling_edge # one of rising_edge, falling_edge, peaks
+elif METHOD == 'peaks':
+    event_index_array = peaks # one of rising_edge, falling_edge, peaks
+else:
+    raise ValueError('"METHOD" has to be one of "rising", "falling" or "peaks"')
+
+# plot peaks and threshold crossings
+ax2.plot(time[peaks], data[peaks], 'k.', label='filtered_peaks')
+ax2.plot(time[rising_edge], data[rising_edge], 'o', label='edge crossings')
+
+# find cycles with a perturbation
+pert_inxs,  = np.where(np.diff(perturbation) < -1)
+pert_moments = time[pert_inxs]
+ax2.plot(pert_moments, perturbation[pert_inxs], 'kx')
+
+cross_moments = time[event_index_array]
+
+# filter out cases where we can't detect the cycle because the perturbation fell right on it
+cross_period = np.diff(cross_moments)
+period_times = cross_moments[:-1] + cross_period/2
+valid = au.find_valid_periods(period_times, cross_period, passes=2, threshold=1.6)
+
+perturbed_cylces = []
+perturb_phase = []
+perturb_indexes = []
+invalid_perturbed_cylces = []
+try:
+    for i, (e1, e2, v) in enzip(event_index_array, event_index_array[1:], valid):
+        # find the first perturbation after the current crossing
+        for pert in pert_inxs:
+            if pert > e1:
+                break
+        else:
+            raise StopIteration()
+        
+        # if te perturbation happened before the next peak, store it
+        if pert <= e2:
+            
+            # keep it only if the period in question was valid
+            if v:
+                perturbed_cylces.append(i)
+                
+                # get phase of perturbation
+                phase = (pert-e1) / (e2-e1) # here dividing indexes or actual time values is identical
+                perturb_phase.append(phase)
+                perturb_indexes.append(pert)
+            else:
+                invalid_perturbed_cylces.append(i)
+            
+except StopIteration:
+    # this happens if there are no more perturbations to find
+    pass
+
+# mark the cycles that have a perturbation
+for inx in perturbed_cylces:
+    start = event_index_array[inx]
+    end = event_index_array[inx+1]
+    ax2.plot(time[start:end], data_hp[start:end], 'r')
+
+for inx in invalid_perturbed_cylces:
+    start = event_index_array[inx]
+    end = event_index_array[inx+1]
+    # ax2.plot(time[start:end], data_hp[start:end], 'r')
+    ax2.fill_betweenx([data_hp.min(), data_hp.max()], time[start], time[end], color='0.7', zorder=1)
+
+# plot one extra patch to label it
+ax2.fill_betweenx([data_hp.min(), data_hp.max()], time[start], time[end], color='0.7', zorder=1, label='invalid')
+
+for pi, ph in zip(pert_inxs, perturb_phase):
+    ax2.text(time[pi], perturbation[pi]+0.5, f'{ph:.2f}')
+
+# plot PRC
+
+ax.set_title('Time series and analysis')
+axp.set_xlabel('Time [sec]')
+ax.set_ylabel('mV')
+ax2.set_ylabel('detrended signal [mV]')
+axp.set_ylabel('periods [s]')
+
+ax.legend()
+ax2.legend()
+axp.legend()
+axp.grid()
+ax_prc.legend()
+
+# plot valid cycles aligned at start of the cycle
+keep_perturbation = []
+for i, (inx, pert_inx, pert_phase) in enzip(perturbed_cylces, perturb_indexes, perturb_phase):
+    start = event_index_array[inx]
+    end = event_index_array[inx+1]
+    
+    phase = (time[start:end] - time[start]) / (time[end] - time[start])
+    
+    # ax_prc.plot(time[start:end] - time[start], raw_data[start:end])
+    # ax_prc.plot(phase, raw_data[start:end])
+    # ax_prc.plot(pert_phase, raw_data[pert_inx], 'ko', zorder=3)
+
+    if 0.3 < pert_phase < 0.8:
+        keep_perturbation.append(i)
+
+fig, axarr = plt.subplots(4,3, figsize=[16.03,  7.6 ])
+
+amplitude = []
+pert_time = []
+for j, i in enumerate(keep_perturbation):
+    ax = axarr.flat[j % axarr.size]
+    
+    inx = perturbed_cylces[i]
+    pert_inx = perturb_indexes[i]
+    
+    # define some things about the cycle
+    start = event_index_array[inx]
+    end = event_index_array[inx+1]
+    pert_moment = time[pert_inx] - time[start]
+    
+    # grab only the bit we are interested in
+    bit = raw_data[pert_inx: pert_inx+400]
+    tbit = time[pert_inx: pert_inx+400] - time[pert_inx]
+
+    # find the peak
+    peak = signal.find_peaks(-bit, prominence=5)[0][0]
+
+    # perturbation amplitude
+    pert_amp = raw_data[pert_inx] - bit[peak]
+
+    # save data
+    amplitude.append(pert_amp)
+    pert_time.append(time[pert_inx])
+
+    # plot
+    offset =  time[pert_inx] - time[start] # to plot on the perturbation tmie only
+    ax.plot(time[start:end] - time[start], raw_data[start:end])
+    ax.plot(tbit + offset, bit)
+    ax.plot(pert_moment, raw_data[pert_inx], 'ro')
+
+    tpeak = tbit[peak] + offset
+    ax.plot(tpeak, bit[peak], 'ok')
+    ax.plot([tpeak, tpeak], [bit[peak], bit[peak]+pert_amp], '--k')
+    
+    ax.set_title(f'{pert_amp:3f}')
+
+
+output_dir = file.parent / 'output' / 'perturbation_amplitude'
 savefile = output_dir / file.stem
 np.savez(savefile, 
-         relaxation = relaxation,
-         relaxation_error = relaxation_error,
-         cycle_duration = cycle_duration
-         )
+          amplitude = amplitude,
+          pert_time = pert_time,
+          )
+
 
 #%% Analize relaxation time data
 
 
-# BASE_DIR = Path('/media/marcos/DATA/marcos/FloClock_data/phase_response_curve')
-BASE_DIR = Path('/home/user/Documents/Doctorado/Fly clock/FlyClock_data/phase_response_curve')
+BASE_DIR = Path('/media/marcos/DATA/marcos/FloClock_data/phase_response_curve')
+# BASE_DIR = Path('/home/user/Documents/Doctorado/Fly clock/FlyClock_data/phase_response_curve')
 data_dir = BASE_DIR / 'output' / 'relaxation_times'
 files = contenidos(data_dir, filter_ext='.npz')
 
@@ -1231,6 +1543,7 @@ for i, file in enumerate(files):
     # call out outlier runs
     if any(r>0.2 for r in relax):
         print('Run with high relaxation times:', file.stem)
+        continue
     
     # scatter plot
     mean_relax = wheighted_mean(relax, err)
@@ -1270,6 +1583,139 @@ axs1.set_ylabel('relaxation time')
 
 axs2.set_xlabel('run number')
 axs2.set_ylabel('normalized relaxation time')
+
+
+#%% Analize perturbation amplitude data
+
+
+BASE_DIR = Path('/media/marcos/DATA/marcos/FloClock_data/phase_response_curve')
+# BASE_DIR = Path('/home/user/Documents/Doctorado/Fly clock/FlyClock_data/phase_response_curve')
+data_dir = BASE_DIR / 'output' / 'perturbation_amplitude'
+files = contenidos(data_dir, filter_ext='.npz')
+
+max_relax = 0.4
+
+def wheighted_mean(num, err):
+    if num.shape != err.shape:
+        return num.mean()
+    else:
+        return np.average(num, weights = 1/err**2)
+
+
+fig, (ax1, ax2, ax3)  = plt.subplots(1, 3, constrained_layout=True, sharey=True)
+
+amplitudes = []
+for i, file in enumerate(files):
+    loaded = np.load(file)
+    amp = loaded['amplitude']
+    time = loaded['pert_time']
+    
+    mean_amp = amp.mean()
+    
+    # # filter outliers
+    # dur = dur[relax<0.4]
+    # relax = relax[relax<0.4]
+    
+    # # call out outlier runs
+    # if any(r>0.2 for r in relax):
+    #     print('Run with high relaxation times:', file.stem)
+    
+    # scatter plot
+    ax1.plot(time, amp)
+    
+    # histograms
+    ax2.hist(amp, alpha=0.3, fc=f'C{i}', orientation='horizontal')
+    # ax2.plot(mean_amp, 10, 'v', c=f'C{i}')
+    ax2.set_xlabel('amplitude time')
+    
+    # cloud
+    kde_scatter(i+1, amp, horizontal_scale=0.1, ax=ax3, alpha=1, 
+                mec=None, c=f'C{i}')    
+
+    # save data for a boxplot
+    amplitudes.append(amp)
+
+ax3.boxplot(amplitudes, showfliers=False, medianprops={'color':'k'})
+
+ax1.set_xlabel('perturbation time')
+ax1.set_ylabel('perturbation amplitude')
+
+ax2.set_xlabel('counts')
+ax3.set_xlabel('run number')
+
+
+#%% Validate PRC sensitivity with all periods
+
+""" In this cell we want to calculate the period difference like we do when
+calculating the PRC to check if the sensitivity of the method is indeed what
+we get in the gray band. We will do this by calculating what we call P_{-1} in
+the paper."""
+
+# data_dir = '/media/marcos/DATA/marcos/FloClock_data/data'
+data_dir = '/media/marcos/DATA/marcos/FloClock_data/tiempos_post_diseccion'
+data_dir = Path(data_dir) / 'output' / 'frequency_time_dependency'
+
+outlier_mode_proportion = 1.8 #1.8 for normal runs
+
+info_dir = data_dir / 'periods_info.csv'
+data_files = contenidos(data_dir, filter_ext='.npz')
+
+# load info
+info = pd.read_csv(info_dir).sort_values('name').set_index('name')
+
+# add tpd in seconds
+info['tpd_sec'] = info.tpd * 60
+
+# load, process and plot
+fig, (ax1, ax2) = plt.subplots(1, 2, gridspec_kw={'width_ratios':[3,1]}, sharey=True)
+
+times = []
+dcds = []
+i = 0
+for file in data_files:
+    # load data
+    data = np.load(file)
+    t = data['times'] / 60
+    CD = data['periods']
+    tpd = info.loc[file.stem].tpd
+    
+    small = info.loc[file.stem]['type'] == 'S'
+    if small:
+        continue
+    
+    # plot trend lines
+    valid_indexes = au.find_valid_periods(t, CD, outlier_mode_proportion, passes=2)
+    # CD[valid_indexes] = np.nan
+    CD = CD[valid_indexes]
+    t = t[valid_indexes]
+    
+    # we calculate the ΔCD (dcd) as (CD[i-1] - CD[i])/CD[i]
+    dcd = (CD[:-1] - CD[1:]) / CD[1:]
+    time = t[:-1] + np.diff(t)/2 + tpd
+        
+    # remove invalids
+    time = time[np.isfinite(dcd)]
+    dcd = dcd[np.isfinite(dcd)]
+    
+    # append data to lists
+    dcds.extend(dcd)
+    times.extend(time)
+    
+    ax1.plot(time, dcd, '.')
+    
+    i+=1
+    if i==5:
+        break
+    
+ax2.hist(dcds, bins='auto', orientation='horizontal')
+
+ax1.set_ylabel(r'$P_{-1} = (CD_{i-1} - CD_i)$÷$CD_i$')
+ax1.set_xlabel('time since dissection [min]')
+ax2.set_xlabel('counts')
+
+print(f'Algorithm sensitivity: {np.std(dcds):.3f}')
+print(f'P_{{-1}} mean: {np.mean(np.abs(dcds)):.3f}')
+
 #%%
 
 file = '/media/marcos/DATA/marcos/FloClock_data/Raw data preps con ojos/14320023.abf'

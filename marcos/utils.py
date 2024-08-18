@@ -1,20 +1,23 @@
 import os
 import time
 import re
-import numpy as np
+import colorsys
+from numbers import Number
+from pathlib import Path
 
 #para correr remotamente
 #import matplotlib
 #matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib.collections import LineCollection
-from scipy import stats
+import matplotlib.colors as mc
 # from matplotlib.colors import ListedColormap, BoundaryNorm
+
+from scipy import stats
 import pandas as pd
+import numpy as np
 
 from PIL import Image as pil_image
-from numbers import Number
-from pathlib import Path
 
 def bitificar8(im,desv=1):
     '''Devuelve la imagen pasada a 8 bits. Puede reescalar la desviación.'''
@@ -358,6 +361,55 @@ def smart_number_format(number, length, strip_trailing_zeros=True, end_int_in_ze
         return proto_number[:length+1]
     else:
         return proto_number[:length]
+
+def significant_digits(number, digits=3):
+    """
+    Rounds a number or array of numbers to a given ammount of significant digits.
+
+    Parameters
+    ----------
+    number : Number
+        Number to round.
+    digits : TYPE, optional
+        DESCRIPTION. The default is 3.
+
+    Raises
+    ------
+    TypeError
+        If number is not a numeric type, or digits is not a positive integer.
+
+    Returns
+    -------
+    rounded : Number
+        The rounded number, usually a float. See np.round to see how the type 
+        is handeled.
+        
+    Examples
+    --------
+    significant_digits(3.1415962, 3) 
+    >>> 3.14
+    significant_digits(990000, 1)
+    >>> 1000000
+    significant_digits(0.00021864, 2)
+    >>> 0.00022
+    """
+    if not isinstance(number, Number):
+        raise TypeError(f'number {number} should be a number, not a {type(number)}')
+    if not isinstance(digits, (int, np.integer)) or digits <=0:
+        raise TypeError(f'digits {digits} should be positive integer')
+    
+    # return early if exactly zero or non finite
+    if number == 0 or not np.isfinite(number):
+        return number
+    
+    # find order of magnitude in base 10
+    order = np.floor(np.log10(np.abs(number))).astype(int)
+    
+    # round the number
+    # this is like (round(n/10**order, digits-1))*10**order, but more efficient
+    # this however lacks support for arrays
+    rounded = np.round(number, -order + (digits-1))
+    return rounded
 
 def comma_separated_and(*a, skip_nones=False):
     """
@@ -1349,7 +1401,32 @@ def colorline(x, y, z=None, cmap=plt.get_cmap('copper'), norm=plt.Normalize(0.0,
     
     return lc
         
+
+def adjust_color(color, amount=0.5):
+    """ Adjusts the lightness level of a color by multilying luminosity by the
+    given ammount. Color van be in any matplotlib-compatible format (RGB, hex
+    string, color string). 
     
+    Using values 0-1 will darkenthe color, and using values > 1 will lighten 
+    it. Usually, amount=2 will result in pure white, but if the original color 
+    was desaturated and/or had a low value in one of the color channels, this 
+    function will first lighten the other color channels and only then start
+    incresing that one. (This is because of how the RGB to HLS color space 
+    transformation works, idk, check that.)
+    
+    Source:
+    https://stackoverflow.com/questions/37765197/darken-or-lighten-a-color-in-matplotlib
+    """
+    
+    try:
+        c = mc.cnames[color]
+    except:
+        c = color
+    c = colorsys.rgb_to_hls(*mc.to_rgb(c))
+    adjusted_color = c[0], max(0, min(1, amount * c[1])), c[2]
+    return colorsys.hls_to_rgb(*adjusted_color)
+
+
 def clear_frame(ax=None, hidespine=True): 
     """Hides axis frame, ticks and so on"""
     # Taken from a post by Tony S Yu
