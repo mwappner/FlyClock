@@ -3068,8 +3068,8 @@ print(f'Min valid fraction: {min_valid_fraction:.1%}')
 
 #%% Quantify baselines
 
-data_dir = '/media/marcos/DATA/marcos/FloClock_data/tiempos_post_diseccion'
-# data_dir = '/home/user/Documents/Doctorado/Fly clock/FlyClock_data/tiempos_post_diseccion'
+# data_dir = '/media/marcos/DATA/marcos/FloClock_data/tiempos_post_diseccion'
+data_dir = '/home/user/Documents/Doctorado/Fly clock/FlyClock_data/tiempos_post_diseccion'
 data_dir = Path(data_dir) / 'output' / 'baseline_time_dependency'
 
 info_dir = data_dir / 'baselines_info.csv'
@@ -3142,6 +3142,31 @@ axh.set_xlabel('# counts')
 axh.set_title('Distribution of baselines\n(data over time)')
 axh.grid()
 
+
+#%% CD vs baseline
+
+# data_dir = Path('/media/marcos/DATA/marcos/FloClock_data/tiempos_post_diseccion/output')
+data_dir = Path('/home/user/Documents/Doctorado/Fly clock/FlyClock_data/tiempos_post_diseccion/output')
+
+CD_dir = data_dir / 'frequency_time_dependency'
+baseline_dir = data_dir / 'baseline_time_dependency'
+
+info_dir = CD_dir / 'periods_info.csv'
+info_dir = baseline_dir / 'baselines_info.csv'
+
+CD_data_files = contenidos(CD_dir, filter_ext='.npz')
+base_data_files = contenidos(baseline_dir, filter_ext='.npz')
+
+outlier_mode_proportion = 1.8 #1.8 for normal runs
+time_bins = 30, # use an iterable. If just value, usea a tuple like so: 10,
+
+test_file_inx = 1
+
+test_file_name = CD_data_files[test_file_inx].name
+test_file_CD = CD_data_files[test_file_inx]
+test_file_base = base_data_files[test_file_inx]
+
+assert test_file_CD.name == test_file_base.name 
 
 #%% Quantify amplitudes
 

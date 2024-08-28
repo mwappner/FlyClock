@@ -73,9 +73,10 @@ print('sampling rate:', abf.sampleRate)
 #%% Visualize one run
 
 # Load data
-data_dir = '/media/marcos/DATA/marcos/FloClock_data/data'
+# data_dir = '/media/marcos/DATA/marcos/FloClock_data/data'
+data_dir = '/home/user/Documents/Doctorado/Fly clock/FlyClock_data/data'
 # data_dir = '/media/marcos/DATA//marcos/FloClock_data/data - mecamilamina'
-file_inx = 17
+file_inx = 11
 
 data_files = contenidos(data_dir, filter_ext='.abf')
 pair_guide_file = contenidos(data_dir, filter_ext='.xlsx').pop()
@@ -159,7 +160,7 @@ if hasattr(data.metadata, 'mec_start_sec'):
     fig.legend(handles=[mec_line], ncol=6, loc='upper right', bbox_to_anchor=(1, 0.97))    
     
 for ax in 'abc':
-    ax_dict[ax].set_xlim(30, 40)
+    ax_dict[ax].set_xlim(12, 22)
     # ax_dict[ax].set_xlim(data.metadata.mec_start_sec, data.metadata.mec_start_sec+100)
 for ax in 'xyz':
     ax_dict[ax].set_xlim(data.times.min(), data.times.max())
@@ -179,8 +180,8 @@ for ax in 'cz':
 
 # Load data
 data_dir = '/media/marcos/DATA/marcos/FloClock_data/data'
-data_dir = '/media/marcos/DATA//marcos/FloClock_data/data - mecamilamina'
-file_inx = 4
+# data_dir = '/media/marcos/DATA//marcos/FloClock_data/data - mecamilamina'
+file_inx = 10
 
 data_files = contenidos(data_dir, filter_ext='.abf')
 pair_guide_file = contenidos(data_dir, filter_ext='.xlsx').pop()
@@ -239,19 +240,20 @@ for axi in axdict.values():
 
 # Load data
 # data_dir = '/media/marcos/DATA/marcos/FloClock_data/data'
-data_dir = '/media/marcos/DATA//marcos/FloClock_data/data - mecamilamina'
-file_inx = 4 # 0, 11, 22, 37
+data_dir = '/home/user/Documents/Doctorado/Fly clock/FlyClock_data/data'
+# data_dir = '/media/marcos/DATA//marcos/FloClock_data/data - mecamilamina'
+file_inx = 11 # 0, 11, 22, 37
 plot_interval = [125, 155]
-# plot_interval = [548, 561]
+plot_interval = [30, 40]
 
 data_files = contenidos(data_dir, filter_ext='.abf')
 pair_guide_file = contenidos(data_dir, filter_ext='.xlsx').pop()
 
 # Process data a bit
-data = au.load_data(data_files[file_inx], gauss_filter=False, override_raw=False)
+data = au.load_data(data_files[file_inx], gauss_filter=True, override_raw=False)
 data.process.lowpass_filter(filter_order=2, frequency_cutoff=10, keep_og=True)
 data = data.process.downsample()
-# data.process.highpass_filter(filter_order=2, frequency_cutoff=0.1, channels='lpfilt')
+data.process.highpass_filter(filter_order=2, frequency_cutoff=0.1, channels='lpfilt')
 data.process.lowpass_filter(filter_order=2, frequency_cutoff=2, keep_og=True, channels='lpfilt') #apply it on the non-detrended data because we will detrned manually later when plotting
 data = data.process.downsample(2)
 
@@ -275,18 +277,17 @@ for (axl, axr), ch in zip(axarr, (1,2)):
     # mark the zoomed in areas
     axl.fill_betweenx(axl.get_ylim(), *plot_interval, color='0.5')
 
-    # plot mec start line, if needed
-    if hasattr(data.metadata, 'mec_start_sec'):
-        
-        mec_line = axl.axvline(data.metadata.mec_start_sec, ls='--', c='k', label='mec start')
-        fig.legend(handles=[mec_line], ncol=6, loc='upper right', bbox_to_anchor=(1, 0.97))    
+# plot mec start line, if needed
+if hasattr(data.metadata, 'mec_start_sec'):
+    
+    mec_line = axl.axvline(data.metadata.mec_start_sec, ls='--', c='k', label='mec start')
+    fig.legend(handles=[mec_line], ncol=6, loc='upper right', bbox_to_anchor=(1, 0.97))    
 
 fig.suptitle(data.metadata.file.stem)
 axarr[-1, 0].set_xlabel('Time [seconds]')
 
-# axarr[0, 0].set_ylim(-70, -10)
-# axarr[0, 0].set_ylim(-10, 30)
-# axarr[0, 0].set_xlim(330, 650)
+axarr[0, 0].set_ylim(-70, -10)
+axarr[0, 0].set_ylim(-10, 30)
 
 # make scale bar
 for axi in axarr.flat:
@@ -348,101 +349,63 @@ data_dir = '/media/marcos/DATA/marcos/FloClock_data/data'
 # data_dir = '/media/marcos/DATA//marcos/FloClock_data/data - mecamilamina'
 file_inx = 17
 channel = 2 # 1 or 2
-tmax = 1020 # in sec
 
 # for the zoomed-in plot
-plot_seconds = 9 # duration
-t0 = 83 # where to start in seconds
+plot_seconds = 10 # duration
+t0 = 30 # where to start
 
 data_files = contenidos(data_dir, filter_ext='.abf')
 pair_guide_file = contenidos(data_dir, filter_ext='.xlsx').pop()
 
-fig = plt.figure(constrained_layout=True, figsize=[11, 9])
+fig = plt.figure(constrained_layout=True, figsize=[11, 7])
 # figs, axarr = plt.subplots(4,2, constrained_layout=True, sharex='col')
-figs = fig.subfigures(5)
-
-sup_axs = figs[4].subplots(1, 2,  width_ratios=[3,1], sharey=True)
+figs = fig.subfigures(4)
 
 ch = f'ch{channel}'
 
+# Process data a bit
 data = au.load_data(data_files[file_inx], gauss_filter=False, override_raw=False)
-data = data.process.downsample(2)
-
-# construct step slices
-t0_points = find_point_by_value(data.times, t0)
-tf_points = find_point_by_value(data.times, t0+plot_seconds)
-tmax_points = find_point_by_value(data.times, tmax)
-
-step_full = slice(None, tmax_points, 100) # full range, 100× downsampling
-step_ins = slice(t0_points, tf_points, 10) # short frame, 10× downsampling
-
-# Raw data
-for ax, step in zip(figs[0].subplots(1, 2,  width_ratios=[3,1], sharey=True), (step_full, step_ins)):
-    ax.plot(data.times[step], data[ch][step], '0.6')
+for ax in figs[0].subplots(1, 2,  width_ratios=[3,1]):
+    ax.plot(data.times, data[ch], '0.6')
     ax.set_ylabel('mV')
     ax.set_xlim(data.times.min(), data.times.max())    
     
 ax.set_xlim(t0, t0+plot_seconds)
 figs[0].suptitle('Raw data')
 
-# Highpassed (detrended)
-data.process.highpass_filter(filter_order=2, frequency_cutoff=0.1)
-for ax, step, sup_ax in zip(figs[1].subplots(1, 2,  width_ratios=[3,1], sharey=True), 
-                            (step_full, step_ins), sup_axs):
-    ax.plot(data.times[step], data[ch][step], '0.6')
-    ax.set_ylabel('mV')
-    ax.set_xlim(data.times.min(), data.times.max()) 
-    
-    sup_ax.plot(data.times[step], data[ch][step], c='0.6')
-    
-ax.set_xlim(t0, t0+plot_seconds)
-ax.set_ylim(-9, 19.5)
-figs[1].suptitle('Highpass filter (botterworth filter with 0.1Hz cutoff frequency) [sacamos el trend global, enderezamos]')
-
-# Lowpassed (denosied)
 data.process.lowpass_filter(filter_order=2, frequency_cutoff=10)
-for ax, step, sup_ax in zip(figs[2].subplots(1, 2,  width_ratios=[3,1], sharey=True),
-                    (step_full, step_ins), sup_axs):
-    ax.plot(data.times[step], data[ch][step], '0.6')
+for ax in figs[1].subplots(1, 2, width_ratios=[3,1]):
+    ax.plot(data.times, data[ch], '0.6')
     ax.set_ylabel('mV')
-    ax.set_xlim(data.times.min(), data.times.max())
-    
-    sup_ax.plot(data.times[step], data[ch][step], c='k')
+    ax.set_xlim(data.times.min(), data.times.max())    
     
 ax.set_xlim(t0, t0+plot_seconds)
-ax.set_ylim(-9, 19.5)
-figs[2].suptitle('Lowpass filter (botterworth filter with 10Hz cutoff frequency) [limpiamos spikes y un poco de ruido]')
+figs[1].suptitle('Lowpass filter (botterworth filter with 10Hz cutoff frequency) [limpiamos spikes y un poco de ruido]')
 
-# Lowpassed (smoothed)
-# data = data.process.downsample()
+data = data.process.downsample()
+data.process.highpass_filter(filter_order=2, frequency_cutoff=0.1)
+for ax in figs[2].subplots(1, 2, width_ratios=[3,1]):
+    ax.plot(data.times, data[ch], '0.6')
+    ax.set_ylabel('mV')
+    ax.set_xlim(data.times.min(), data.times.max())    
+    
+ax.set_xlim(t0, t0+plot_seconds)
+figs[2].suptitle('Highpass filter (botterworth filter with 0.1Hz cutoff frequency) [sacamos el trend global, enderezamos]')
+
 data.process.lowpass_filter(filter_order=2, frequency_cutoff=2)
 data.process.find_peaks(period_percent=0.4, prominence=3)
-for ax, step, sup_ax in zip(figs[3].subplots(1, 2,  width_ratios=[3,1], sharey=True),
-                    (step_full, step_ins), sup_axs):
-    ax.plot(data.times[step], data[ch][step], '0.6')
+for ax in figs[3].subplots(1, 2, sharey=True, width_ratios=[3,1]):
+    ax.plot(data.times, data[ch], '0.6')
+    ax.plot(data.process.get_peak_pos(channel), data.process.get_peak_values(inx=channel), 'k.')
+    ax.set_xlabel('time [sec]')
     ax.set_ylabel('mV')
-    ax.set_xlim(data.times.min(), data.times.max())   
+    ax.set_xlim(data.times.min(), data.times.max())    
     
-    sup_ax.plot(data.times[step], data[ch][step], c=lcolor)
-    sup_ax.plot(data.process.get_peak_pos(channel), data.process.get_peak_values(inx=channel), '.', c=lcoloalt)
-
 ax.set_xlim(t0, t0+plot_seconds)
-ax.set_ylim(-9, 19.5)
 figs[3].suptitle('Lowpass filter (botterworth filter with 2Hz cutoff frequency) [alisamos las curvas par aalgunos de los análisis]')
 
-# Format axis with superimposed data
-for sup_ax in sup_axs:
-    sup_ax.set_xlabel('time [sec]')
-    sup_ax.set_ylabel('mV')
-    sup_ax.set_xlim(data.times.min(), data.times.max())
-    
-sup_ax.set_xlim(t0, t0+plot_seconds)
-sup_ax.set_ylim(-9, 19.5)
-
-figs[4].suptitle('Superimposed data with all fitlers applied')
-    
-
 fig.suptitle(f'{data.metadata.file.stem} (Ch{channel})')
+
 
 #%% Plot and save all runs
 
@@ -539,9 +502,9 @@ for i, file in enumerate(data_files):
 #%% Plot trendlines
 
 # Load data
-data_dir = '/media/marcos/DATA/marcos/FloClock_data/data - mecamilamina'
-save_dir = '/media/marcos/DATA/marcos/FloClock pics/mecamilamina/Trends'
-out_dir = '/media/marcos/DATA/marcos/FloClock_data/data - mecamilamina/output/polynomial_trends'
+data_dir = '/data/marcos/FloClock_data/data - mecamilamina'
+save_dir = '/data/marcos/FloClock pics/mecamilamina/Trends'
+out_dir = '/data/marcos/FloClock_data/data - mecamilamina/output/polynomial_trends'
 
 file_inx = 0
 plot_all = False
@@ -2772,7 +2735,7 @@ for i, file in enumerate(data_files):
 data_dir = Path('/media/marcos/DATA/marcos/FloClock_data/data/output/cross_correlations')
 pair_guide_file = data_dir.parent.parent / 'par_guide.xlsx'
 
-file_inx = 25
+file_inx = 15
 
 correlation_files = contenidos(data_dir)
 pair_guide = pd.read_excel(pair_guide_file).sort_values('name', ignore_index=True).set_index('name', drop=True)
@@ -2802,7 +2765,7 @@ correlation_files = contenidos(data_dir)
 pair_guide = pd.read_excel(pair_guide_file).sort_values('name', ignore_index=True).set_index('name', drop=True)
 
 for file in correlation_files:
-    file = correlation_files[file_inx] #!!! comment this to see all
+    # file = correlation_files[file_inx]
     loaded = np.load(file)
     
     lengths = loaded['lengths']
@@ -2826,7 +2789,6 @@ for file in correlation_files:
     ax.set_ylim(-1, 1)
     ax.legend(title='window length', ncol=len(times_names), loc='lower left')
 
-    break
     fig.savefig('/media/marcos/DATA/marcos/FloClock pics/Xcorr/' + file.stem)
     plt.close(fig)
 
@@ -2834,7 +2796,8 @@ for file in correlation_files:
 import copy
  
 # load data
-data_dir = Path('/media/marcos/DATA/marcos/FloClock_data/data/output/cross_correlations')
+# data_dir = Path('/media/marcos/DATA/marcos/FloClock_data/data/output/cross_correlations')
+data_dir = Path('../FlyClock_data/data/output/cross_correlations')
 pair_guide_file = data_dir.parent.parent / 'par_guide.xlsx'
 
 correlation_files = contenidos(data_dir)
@@ -2936,12 +2899,14 @@ res_k = stats.kruskal(*[lags_df.lag[lags_df.condensed_type==what] for what in in
 print('\nGlobal (Kruscak-Wallis): pval =', f'{res_k.pvalue:.3e}')
 
 
+
 #%% Align Xcorrs with tpd
 
 import copy
  
 # load data
-data_dir = Path('/media/marcos/DATA/marcos/FloClock_data/data/output/multi_cross_correlations')
+# data_dir = Path('/media/marcos/DATA/marcos/FloClock_data/data/output/multi_cross_correlations')
+data_dir = Path('../FlyClock_data/data/output/multi_cross_correlations')
 pair_guide_file = data_dir.parent.parent / 'par_guide.xlsx'
 tpd_file = data_dir.parent.parent.parent / 'tiempos_post_diseccion' / 'info.xlsx'
 
@@ -2956,7 +2921,7 @@ tpd_data = pd.concat(sheet for name, sheet in pd.read_excel(tpd_file, sheet_name
                      if name not in ('large', 'small')).sort_values('registro', ignore_index=True)
 pair_guide['tpd'] = tpd_data['tiempo_post_diseccion (mins)'].values
 
-lag_means = dict(
+lags = dict(
     SS = [],
     LL = [],
     LS = [],
@@ -2968,8 +2933,8 @@ lag_means = dict(
 
 plt.rcParams["axes.prop_cycle"] = plt.cycler("color", [*plt.cm.Dark2.colors, *plt.cm.tab10.colors])
 
-fig, axdict = plt.subplot_mosaic([[k] for k in lag_means.keys() if 'R' not in k], sharex=True, sharey=True, constrained_layout=True, figsize=(6.4, 2.8))
-fig2, axdict2 = plt.subplot_mosaic([[k] for k in lag_means.keys()], sharex=True, sharey=True, constrained_layout=True)
+fig, axdict = plt.subplot_mosaic([[k] for k in lags.keys() if 'R' not in k], sharex=True, sharey=True, constrained_layout=True, figsize=(6.4, 2.8))
+fig2, axdict2 = plt.subplot_mosaic([[k] for k in lags.keys()], sharex=True, sharey=True, constrained_layout=True)
 
 # Extract data from the saved correlations
 for corr_file in correlations_files:
@@ -2978,30 +2943,34 @@ for corr_file in correlations_files:
         raise ValueError(f"LENGTH should be one of {loaded['lengths']}")
      
     times = loaded[f'times_{LENGTH}']
-    lags = loaded[f'lags_{LENGTH}']
+    lag_points = loaded[f'lags_{LENGTH}']
     
     # check if we have to invert the correlation because of switched order of channels
     row = pair_guide.loc[corr_file.stem]
     
     if row.ch1 + row.ch2 != row.par:
-        lags *= -1
+        lag_points *= -1
     
     # plot individual cell distributions
     file_inx = find_numbers(corr_file.stem)[0]
-    kde = stats.gaussian_kde(lags)
-    max_val = kde(lags).max()
+    kde = stats.gaussian_kde(lag_points)
+    max_val = kde(lag_points).max()
     
-    axdict2[row.par].plot(np.random.normal(1+file_inx, kde(lags)/max_val/8, size=len(lags)), 
-                         lags, 
+    if str(row.rec) in ['26', '28', '29']:
+        continue
+    
+    axdict2[row.par].plot(np.random.normal(1+file_inx, kde(lag_points)/max_val/8, size=len(lag_points)), 
+                         lag_points, 
                          '.', alpha=0.2, rasterized=True)
 
-    lag_means[row.par].append(lags.mean())
+    lags[row.par].append(lag_points)
     
     # plot evolution over time
     if 'R' in row.par:
+        print(1+file_inx, row.rec, row.par)
         continue
     
-    axdict[row.par].plot(times/60 + row.tpd, lags, '.')
+    axdict[row.par].plot(times/60 + row.tpd, lag_points, '.')
     
     # lags[row.par].append(lags_i)
     # times[row.par].append(cross_points/60 + row.tpd)
@@ -3026,10 +2995,12 @@ for pairtype, ax in axdict2.items():
     ax.grid()
     ax.set_ylabel('lag [sec]')
 
-# restitute default colorcycle
+# restore default colorcycle
 plt.rcParams["axes.prop_cycle"] = plt.cycler("color", plt.cm.tab10.colors)
 
 # pairwise statistical tests
+lag_means = {k:[np.mean(l) for l in ls] for k, ls in lags.items()}
+
 pairs = ['LL', 'SS'], ['LL', 'LS'], ['SS', 'LS'], ['LS', 'LR'], ['LS', 'SR']
 print('\n Pariwise tests: p_t = students-t | p_w : mann-whitney')
 for pair in pairs:
@@ -3039,6 +3010,37 @@ for pair in pairs:
     res_w = stats.mannwhitneyu(first, second)
         
     print(f'{pair[0]} vs {pair[1]} :: p_t:{res_t.pvalue:.2e} \tp_w:{res_w.pvalue:.2e}')
+
+# means, medians and such on pooled data
+print('\nPooled data')
+print('pair\tmean\tSD\tSE\tmedian\tIQR\tn')
+for pair, ls in lags.items():
+    means = np.concatenate(ls)
+    values = (
+        mean   := means.mean(),
+        sd     := means.std() ,
+        se     := sd / np.sqrt(means.size),
+        median := np.median(means),
+        iqr    := np.subtract(*np.percentile(means, [75, 25])),
+        n      := means.size,
+        )
+    print(pair, '\t'.join(f'{v:.3f}' for v in values), sep='\t')
+
+# means, medians and such on means of each cell
+print('\nMeans of each cell')
+print('pair\tmean\tSD\tSE\tmedian\tIQR\tn')
+for pair, means in lag_means.items():
+    means = np.array(means)
+    values = (
+        mean   := means.mean(),
+        sd     := means.std() ,
+        se     := sd / np.sqrt(means.size),
+        median := np.median(means),
+        iqr    := np.subtract(*np.percentile(means, [75, 25])),
+        n      := means.size,
+        )
+    print(pair, '\t'.join(f'{v:.3f}' for v in values), sep='\t')
+
 
 
 
@@ -3173,15 +3175,16 @@ for i, file in enumerate(data_files):
 import copy
  
 # load data
-data_dir = Path('/media/marcos/DATA/marcos/FloClock_data/data/output/crossings')
+# data_dir = Path('/media/marcos/DATA/marcos/FloClock_data/data/output/crossings')
+data_dir = Path('../FlyClock_data/data/output/crossings')
 pair_guide_file = data_dir.parent.parent / 'par_guide.xlsx'
 
 crossings_files = contenidos(data_dir)
 pair_guide = pd.read_excel(pair_guide_file).sort_values('name', ignore_index=True).set_index('name', drop=True)
 
 lags = dict(
-    LL = [],
     SS = [],
+    LL = [],
     LS = [],
     
     LR = [],
@@ -3267,7 +3270,7 @@ for i, (ax, (kind, lag)) in enzip(right, all_lags.items()):
 
 # boxplots
 fig2, ax = plt.subplots(figsize=[3.98, 4.8 ])
-order = ['LL', 'SS', 'LS']#, 'LR', 'SR']
+order = ['SS', 'LL', 'LS', 'LR', 'SR']
 ax.boxplot([all_lags[kind] for kind in order], showfliers=False)
 ax.set_xticklabels(order)
 ax.grid(axis='y')
@@ -3278,7 +3281,7 @@ for i, kind in enumerate(order):
     max_val = kde(points).max()
     
     ax.plot(np.random.normal(1+i, kde(points)/max_val/8, size=len(points)), points, 
-            '.', c=colors_dict[kind], alpha=0.2, mec='none', zorder=1, rasterized=True)
+            '.', c=colors_dict[kind], alpha=0.2, zorder=1, rasterized=True)
 
 # a few statistical tests
 print('\n Difference from zero: p_t = students-t | p_w : wilcoxon | p_s : sign')
@@ -3308,6 +3311,42 @@ for pair in pairs:
 interesting = ['SS', 'LL', 'LS']
 res_k = stats.kruskal(*[all_lags[what] for what in interesting])
 print('\nGlobal (Kruscak-Wallis): pval =', f'{res_k.pvalue:.3e}')
+
+
+
+# means, medians and such on pooled data
+print('\nPooled data')
+print('pair\tmean\tSD\tSE\tmedian\tIQR\tn')
+for pair, ls in lags.items():
+    means = np.concatenate(ls)
+    values = (
+        mean   := means.mean(),
+        sd     := means.std() ,
+        se     := sd / np.sqrt(means.size),
+        median := np.median(means),
+        iqr    := np.subtract(*np.percentile(means, [75, 25])),
+        n      := means.size,
+        )
+    print(pair, '\t'.join(f'{v:.3f}' for v in values), sep='\t')
+
+# means, medians and such on means of each cell
+lag_means = {k:[np.mean(l) for l in ls] for k, ls in lags.items()}
+
+print('\nMeans of each cell')
+print('pair\tmean\tSD\tSE\tmedian\tIQR\tn')
+for pair, means in lag_means.items():
+    means = np.array(means)
+    values = (
+        mean   := means.mean(),
+        sd     := means.std() ,
+        se     := sd / np.sqrt(means.size),
+        median := np.median(means),
+        iqr    := np.subtract(*np.percentile(means, [75, 25])),
+        n      := means.size,
+        )
+    print(pair, '\t'.join(f'{v:.3f}' for v in values), sep='\t')
+
+
 
 #%% Align crossings with tpd
 
@@ -3423,8 +3462,11 @@ axarr[-1, 1].set_xlabel('counts')
 import copy
  
 # load data
-xcorr_data_dir = Path('/media/marcos/DATA/marcos/FloClock_data/data/output/multi_cross_correlations')
-cross_data_dir = Path('/media/marcos/DATA/marcos/FloClock_data/data/output/crossings')
+# base_data_dir = Path('/media/marcos/DATA/marcos/FloClock_data/data/output/')
+base_data_dir = Path('../FlyClock_data/data/output')
+
+xcorr_data_dir = base_data_dir / 'multi_cross_correlations'
+cross_data_dir = base_data_dir / 'crossings'
 pair_guide_file = xcorr_data_dir.parent.parent / 'par_guide.xlsx'
 tpd_file = xcorr_data_dir.parent.parent.parent / 'tiempos_post_diseccion' / 'info.xlsx'
 
@@ -3531,8 +3573,6 @@ for fname, row in pair_guide.iterrows():
     axdictX[row.par].plot(xtimes/60 + row.tpd, xlags, '.', c=color)
     axdictC[row.par].plot(ctimes/60 + row.tpd, clags, '.', c=color)
 
-    if fname in ('LL01', 'LS10', 'SS02'):
-        print(fname, file_inx)
 
 # Some formatting
 axlim = 0.7 # vertical axis limit
@@ -3559,17 +3599,17 @@ for title, axdict in zip(titles, [axdictXi, axdictCi]):
         ax.grid()
         ax.set_ylabel('lag [sec]')
         
-# print('saving...')
+print('saving...')
 
-# savedir = Path('/media/marcos/DATA/marcos/FloClock pics/svgs for paper/fig S4 material V4')
-# savename = savedir / 'Xcorr lags over time.svg'
-# fig_X.savefig(savename, dpi=300)
-# savename = savedir / 'crossing lags over time.svg'
-# fig_C.savefig(savename, dpi=300)
-# savename = savedir / 'Xcorr lags individuals.svg'
-# fig_Xi.savefig(savename, dpi=300)
-# savename = savedir / 'crossing lags individuals.svg'
-# fig_Ci.savefig(savename, dpi=300)
+savedir = Path('/media/marcos/DATA/marcos/FloClock pics/svgs for paper/fig S4 material V4')
+savename = savedir / 'Xcorr lags over time.svg'
+fig_X.savefig(savename, dpi=300)
+savename = savedir / 'crossing lags over time.svg'
+fig_C.savefig(savename, dpi=300)
+savename = savedir / 'Xcorr lags individuals.svg'
+fig_Xi.savefig(savename, dpi=300)
+savename = savedir / 'crossing lags individuals.svg'
+fig_Ci.savefig(savename, dpi=300)
 
 #%% Hist and corr of the means
 

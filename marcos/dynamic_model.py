@@ -654,97 +654,97 @@ def limits_fun(pert_data, pert_isntants, times, *others):
     
     return peaks
 
-# # parameters
-# Tf = 2.2          # forcing period (s)
-# Ω  = (2*np.pi)/Tf     # forcing frequency (Hz)
+# parameters
+Tf = 2.2          # forcing period (s)
+Ω  = (2*np.pi)/Tf     # forcing frequency (Hz)
 
-# rho0 = 11.4 # large
+rho0 = 11.4 # large
 
-# μ  = -3.46
-# a  =  5.53 / rho0**2
-# Δ  =  -0.6 * Ω
-# b  =  0.0
-# f0 =  9.14 * rho0/10
+μ  = -3.46
+a  =  5.53 / rho0**2
+Δ  =  -0.6 * Ω
+b  =  0.0
+f0 =  9.14 * rho0/10
 
-# dy = -4.5
-# pert_every = 9.1
+dy = -4.5
+pert_every = 9.1
 
-# ω = Ω - Δ
+ω = Ω - Δ
 
-# tf = 4000
-# dt = 1e-3
+tf = 4000
+dt = 1e-3
 
-# # variables and models
-# ρ = y(0)
-# θ = y(1)
-# φ = y(2)
-# f = [ ρ * (μ - a*ρ**2) + f0 * cos(φ - θ) , 
-#       ω - b*ρ**2 + f0/ρ * sin(φ-θ) ,
-#       Ω
-#  	]
+# variables and models
+ρ = y(0)
+θ = y(1)
+φ = y(2)
+f = [ ρ * (μ - a*ρ**2) + f0 * cos(φ - θ) , 
+      ω - b*ρ**2 + f0/ρ * sin(φ-θ) ,
+      Ω
+ 	]
 
-# initial_state = np.array([1, 1, 0])
+initial_state = np.array([1, 1, 0])
 
-# # run integrator
-# ODE = jitcode(f)
-# ODE.set_integrator("dopri5")
+# run integrator
+ODE = jitcode(f)
+ODE.set_integrator("dopri5")
+ODE.set_initial_value(initial_state, 0)
+
+# integrate a bit
+times = np.arange(0, pert_every, dt)
+data = np.vstack([ODE.integrate(time) for time in times])
+
+# build perturbation intervals
+pert_count = int(tf // pert_every) - 1
+pert_intervals = np.random.randn(pert_count*2)*2 + pert_every
+
+# iterate and integrate
+pert_data = data
+pert_instants = []
+pert_phase = []
+theo_PRC = []
+for pert_interval in pert_intervals:
+    
+    # perturbate
+    rho0 = pert_data[-1, 0]
+    theta0 = pert_data[-1, 1]
+    rho_pert = np.sqrt( rho0**2 + dy**2 +  2*rho0 * dy * np.sin(theta0))
+    theta_pert = np.arctan2(rho0 * np.sin(theta0) + dy, rho0 * np.cos(theta0))
+        
+    pert_instants.append(ODE.t)
+    pert_phase.append(theta0)
+    theo_PRC.append(theta_pert%(2*np.pi) - theta0%(2*np.pi))
+    
+    # integrate perturbation
+    perturbed_state = np.array([rho_pert, theta_pert, pert_data[-1, 2]])
+    ODE.set_initial_value(perturbed_state, ODE.t)
+    pert_times = np.arange(0, pert_interval, dt) + ODE.t
+    pert_data_bit = np.vstack([ODE.integrate(time) for time in pert_times])
+    
+    pert_data = np.concatenate((pert_data, pert_data_bit))
+    times = np.concatenate((times, pert_times))
+    
+    # end early if needed
+    if ODE.t > tf:
+        break
+
+pert_instants = np.asarray(pert_instants)
+pert_phase = (np.asarray(pert_phase) % (2*np.pi)) / (2*np.pi)
+theo_PRC = np.asarray(theo_PRC)
+
+# # integrate unperturbed, for comparison
 # ODE.set_initial_value(initial_state, 0)
-
-# # integrate a bit
-# times = np.arange(0, pert_every, dt)
 # data = np.vstack([ODE.integrate(time) for time in times])
 
-# # build perturbation intervals
-# pert_count = int(tf // pert_every) - 1
-# pert_intervals = np.random.randn(pert_count*2)*2 + pert_every
+# # extract variables
+# rho = data[:, 0]
+# theta = data[:, 1]
+# phi = data[:, 2]
+# x = rho * np.sin(theta)
 
-# # iterate and integrate
-# pert_data = data
-# pert_instants = []
-# pert_phase = []
-# theo_PRC = []
-# for pert_interval in pert_intervals:
-    
-#     # perturbate
-#     rho0 = pert_data[-1, 0]
-#     theta0 = pert_data[-1, 1]
-#     rho_pert = np.sqrt( rho0**2 + dy**2 +  2*rho0 * dy * np.sin(theta0))
-#     theta_pert = np.arctan2(rho0 * np.sin(theta0) + dy, rho0 * np.cos(theta0))
-        
-#     pert_instants.append(ODE.t)
-#     pert_phase.append(theta0)
-#     theo_PRC.append(theta_pert%(2*np.pi) - theta0%(2*np.pi))
-    
-#     # integrate perturbation
-#     perturbed_state = np.array([rho_pert, theta_pert, pert_data[-1, 2]])
-#     ODE.set_initial_value(perturbed_state, ODE.t)
-#     pert_times = np.arange(0, pert_interval, dt) + ODE.t
-#     pert_data_bit = np.vstack([ODE.integrate(time) for time in pert_times])
-    
-#     pert_data = np.concatenate((pert_data, pert_data_bit))
-#     times = np.concatenate((times, pert_times))
-    
-#     # end early if needed
-#     if ODE.t > tf:
-#         break
-
-# pert_instants = np.asarray(pert_instants)
-# pert_phase = (np.asarray(pert_phase) % (2*np.pi)) / (2*np.pi)
-# theo_PRC = np.asarray(theo_PRC)
-
-# # # integrate unperturbed, for comparison
-# # ODE.set_initial_value(initial_state, 0)
-# # data = np.vstack([ODE.integrate(time) for time in times])
-
-# # # extract variables
-# # rho = data[:, 0]
-# # theta = data[:, 1]
-# # phi = data[:, 2]
-# # x = rho * np.sin(theta)
-
-# pert_rho = pert_data[:, 0]
-# pert_theta = pert_data[:, 1]
-# pert_x = pert_rho * np.sin(pert_theta)
+pert_rho = pert_data[:, 0]
+pert_theta = pert_data[:, 1]
+pert_x = pert_rho * np.sin(pert_theta)
 
 # find maxima
 peaks = limits_fun(pert_data, pert_instants, times)
@@ -1166,7 +1166,8 @@ def filter_data(df, **filters):
 
 PHASE_VAR = 'real_phase' # either 'linear_phase' or 'real_phase'
 
-datadir = r'/media/marcos/DATA/marcos/FloClock_data/dynamic_model/PRC/paper potential/new parameters/'
+# datadir = r'/media/marcos/DATA/marcos/FloClock_data/dynamic_model/PRC/paper potential/new parameters/'
+datadir = r'/home/user/Documents/Doctorado/Fly clock/FlyClock_data/dynamic_model/PRC/paper potential/new parameters/'
 files = contenidos(datadir, filter_ext='.npz')
 
 example = np.load(files[0])
@@ -1215,7 +1216,8 @@ ax.legend()
 
 ## Sensitivity band
 
-rising_PRC_dir = '/media/marcos/DATA/marcos/FloClock_data/phase_response_curve/output/PRC/rising'
+# rising_PRC_dir = '/media/marcos/DATA/marcos/FloClock_data/phase_response_curve/output/PRC/rising'
+rising_PRC_dir = '/home/user/Documents/Doctorado/Fly clock/FlyClock_data/phase_response_curve/output/PRC/rising'
 data_files = contenidos(rising_PRC_dir)
 
 reference = []
